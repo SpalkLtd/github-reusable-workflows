@@ -1,0 +1,33 @@
+name: Tag and Release
+on:
+    workflow_call:
+    push:
+        branches: ["master", "main"]
+    # Allows you to run this workflow manually from the Actions tab
+    workflow_dispatch:
+
+jobs:
+    tag_and_release:
+        runs-on: ubuntu-latest
+        if: startsWith(github.event.head_commit.message, 'cut version')
+        steps:
+            - name: Get Version
+              id: get-version
+              run: |
+                  GITHUB_PR_TITLE="${{github.event.head_commit.message}}"
+                  GITHUB_PR_TITLE="${GITHUB_PR_TITLE^^}"
+                  GITHUB_PR_TITLE="${GITHUB_PR_TITLE#"CUT VERSION "}"
+                  GITHUB_PR_TAG="${GITHUB_PR_TITLE%% *}"
+                  echo "::set-output name=version::$GITHUB_PR_TAG"
+            - name: Create Release
+              uses: actions/github-script@v3
+              with:
+                  github-token: ${{ github.token }}
+                  script: |
+                      github.repos.createRelease({
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        tag_name: "${{ steps.get-version.outputs.version }}",
+                        generate_release_notes: true,
+                        name: "Release - ${{ steps.get-version.outputs.version }}"
+                      })
