@@ -5,7 +5,7 @@ on:
             githubToken:
                 description: 'Github token passed from the caller workflow'
                 required: true
-        input:
+        inputs:
             something:
                 type: string
                 required: false
