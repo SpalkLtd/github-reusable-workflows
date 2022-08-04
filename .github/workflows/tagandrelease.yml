@@ -2,7 +2,7 @@ name: Tag and Release
 on:
     workflow_call:
         secrets:
-            github-token:
+            githubToken:
                 description: 'Github token passed from the caller workflow'
                 required: true
     push:
@@ -28,7 +28,7 @@ jobs:
             - name: Create Release
               uses: actions/github-script@v3
               with:
-                  github-token: ${{ secrets.github-token }}
+                  github-token: ${{ secrets.githubToken }}
                   script: |
                       github.repos.createRelease({
                         owner: context.repo.owner,
