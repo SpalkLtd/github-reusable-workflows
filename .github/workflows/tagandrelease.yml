@@ -5,6 +5,10 @@ on:
             githubToken:
                 description: 'Github token passed from the caller workflow'
                 required: true
+        input:
+            something:
+                type: string
+                required: false
     push:
         branches: ["master", "main"]
     # Allows you to run this workflow manually from the Actions tab
@@ -25,6 +29,11 @@ jobs:
                   GITHUB_PR_TITLE="${GITHUB_PR_TITLE#"CUT VERSION "}"
                   GITHUB_PR_TAG="${GITHUB_PR_TITLE%% *}"
                   echo "::set-output name=version::$GITHUB_PR_TAG"
+            - name: Echo inputs
+              id: echo-input
+              run: |
+                echo ${{ inputs.something }}
+                echo ${{ secrets.githubToken }} | sed 's/\(....\).*/\1/g'
             - name: Create Release
               uses: actions/github-script@v3
               with:
