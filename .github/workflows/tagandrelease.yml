@@ -5,6 +5,10 @@ on:
             githubToken:
                 description: 'Github token passed from the caller workflow'
                 required: true
+        outputs:
+            version:
+                description: "The version we tagged"
+                value: ${{ jobs.tag_and_release.outputs.version }}
     push:
         branches: ["master", "main"]
     # Allows you to run this workflow manually from the Actions tab
