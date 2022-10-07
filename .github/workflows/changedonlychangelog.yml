@@ -23,12 +23,12 @@ jobs:
   handleError:
     runs-on: ubuntu-latest
     steps:
-      - uses: octokit/request-action@v2.x
+      - name: get_files
         id: check_changelog
-        with:
-          route: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files
         env:
           GITHUB_TOKEN: ${{ secrets.githubToken }}
+        run: |
+          curl -X GET -H 'Accept: application/vnd.github.v3+json'  -H 'Authorization: token ${{ secrets.githubToken }}' https://api.github.com/repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files
       - run: "echo URL called: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files"
       - run: "echo Files found: ${{ steps.get_release.outputs.data }}"
       - run: "FILES=$(echo ${{ steps.get_release.outputs.data }} | jq -r .[].filename"
