@@ -30,12 +30,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.githubToken }}
         run: |
-          echo ::set-output name=pr_data::$(curl -H 'Accept: application/vnd.github.v3+json'  -H 'Authorization: Bearer ${{ secrets.githubToken }}' https://api.github.com/repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files)
+          echo ::set-output name=file_list::$(curl -H 'Accept: application/vnd.github.v3+json'  -H 'Authorization: Bearer ${{ secrets.githubToken }}' https://api.github.com/repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files | jq -r .[].filename)
       - run: "echo URL called: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files"
-      - run: "echo Files found: ${{ steps.get_file_data.outputs.pr_data }}"
-      - name: Parse JSON
-        id: parse_json
-        run: "::set-output name=file_list::=$(echo ${{ steps.get_file_data.outputs.pr_data }} | jq -r .[].filename"
       - name: Set output vars
         id: set_output
-        run: '[[ "${{steps.parse_json.outputs.file_list}}" == "CHANGELOG.md" ]] && echo "::set-output name=changelog_only::true" || echo "::set-output name=changelog_only::false"'
+        run: '[[ "${{steps.get_file_data.outputs.file_list}}" == "CHANGELOG.md" ]] && echo "::set-output name=changelog_only::true" || echo "::set-output name=changelog_only::false"'
