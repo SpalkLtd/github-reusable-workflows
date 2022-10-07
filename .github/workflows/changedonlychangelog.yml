@@ -2,12 +2,8 @@ name: Changed only changelog
 on:
     workflow_call:
         inputs:
-            owner:
-                description: 'Github repo owner (SpalkLtd)'
-                required: true
-                type: string
-            repo:
-                description: 'Github repo'
+            owner_repo:
+                description: 'Github owner repo string (SpalkLtd/synchroniser)'
                 required: true
                 type: string
             pr_num:
@@ -30,7 +26,7 @@ jobs:
       - uses: octokit/request-action@v2.x
         id: check_changelog
         with:
-          route: GET /repos/${{ inputs.owner }}/${{ inputs.repo }}/pulls/${{ inputs.pr_num }}/files
+          route: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files
           owner: octokit
           repo: request-action
         env:
