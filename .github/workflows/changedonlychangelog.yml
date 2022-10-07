@@ -27,8 +27,6 @@ jobs:
         id: check_changelog
         with:
           route: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files
-          owner: octokit
-          repo: request-action
         env:
           GITHUB_TOKEN: ${{ secrets.githubToken }}
       - run: "echo URL called: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files"
