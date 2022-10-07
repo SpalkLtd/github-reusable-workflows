@@ -1,6 +1,19 @@
 name: Changed only changelog
 on:
     workflow_call:
+        inputs:
+            owner:
+                description: 'Github repo owner (SpalkLtd)'
+                required: true
+                type: string
+            repo:
+                description: 'Github repo'
+                required: true
+                type: string
+            pr_num:
+                description: 'Github pr number'
+                required: true
+                type: string
         secrets:
             githubToken:
                 description: 'Github token passed from the caller workflow'
@@ -17,7 +30,7 @@ jobs:
       - uses: octokit/request-action@v2.x
         id: check_changelog
         with:
-          route: GET /repos/${{ context.repo.owner }}/${{ context.repo.repo }}/pulls/${{ github.event.number }}/files
+          route: GET /repos/${{ inputs.owner }}/${{ inputs.repo }}/pulls/${{ inputs.pr_num }}/files
           owner: octokit
           repo: request-action
         env:
