@@ -1,0 +1,28 @@
+name: Changed only changelog
+on:
+    workflow_call:
+        secrets:
+            githubToken:
+                description: 'Github token passed from the caller workflow'
+                required: true
+        outputs:
+            changelog_only:
+                description: "True iff CHANGELOG.md was the only file that changed for the PR"
+                value: ${{ jobs.check_changelog.outputs.changelog_only }}
+
+jobs:
+  handleError:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: octokit/request-action@v2.x
+        id: check_changelog
+        with:
+          route: GET /repos/${{ context.repo.owner }}/${{ context.repo.repo }}/pulls/${{ github.event.number }}/files
+          owner: octokit
+          repo: request-action
+        env:
+          GITHUB_TOKEN: ${{ secrets.githubToken }}
+      - run: "echo URL called: GET /repos/${{ context.repo.owner }}/${{ context.repo.repo }}/pulls/${{ github.event.number }}/files"
+      - run: "echo Files found: ${{ steps.get_release.outputs.data }}"
+      - run: "FILES=$(echo ${{ steps.get_release.outputs.data }} | jq -r .[].filename"
+      - run: '[[ "$FILES" == "CHANGELOG.md" ]] && echo "::set-output name=changelog_only::true" || echo "::set-output name=changelog_only::false"'
