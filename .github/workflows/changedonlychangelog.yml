@@ -1,0 +1,37 @@
+name: Changed only changelog
+on:
+    workflow_call:
+        inputs:
+            owner_repo:
+                description: 'Github owner repo string (SpalkLtd/synchroniser)'
+                required: true
+                type: string
+            pr_num:
+                description: 'Github pr number'
+                required: true
+                type: string
+        secrets:
+            githubToken:
+                description: 'Github token passed from the caller workflow'
+                required: true
+        outputs:
+            changelog_only:
+                description: "True iff CHANGELOG.md was the only file that changed for the PR"
+                value: ${{ jobs.check_changelog.outputs.changelog_only }}
+
+jobs:
+  check_changelog:
+    runs-on: ubuntu-latest
+    outputs:
+      changelog_only: ${{ steps.set_output.outputs.changelog_only }}
+    steps:
+      - name: Get file list from GH API
+        id: get_file_data
+        env:
+          GITHUB_TOKEN: ${{ secrets.githubToken }}
+        run: |
+          echo ::set-output name=file_list::$(curl -H 'Accept: application/vnd.github.v3+json'  -H 'Authorization: Bearer ${{ secrets.githubToken }}' https://api.github.com/repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files | jq -r .[].filename)
+      - run: "echo URL called: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files"
+      - name: Set output vars
+        id: set_output
+        run: '[[ "${{steps.get_file_data.outputs.file_list}}" == "CHANGELOG.md" ]] && echo "::set-output name=changelog_only::true" || echo "::set-output name=changelog_only::false"'
