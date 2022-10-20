@@ -30,8 +30,8 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.githubToken }}
         run: |
-          echo ::set-output name=file_list::$(curl -H 'Accept: application/vnd.github.v3+json'  -H 'Authorization: Bearer ${{ secrets.githubToken }}' https://api.github.com/repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files | jq -r .[].filename)
+          echo "{file_list}={$(curl -H 'Accept: application/vnd.github.v3+json'  -H 'Authorization: Bearer ${{ secrets.githubToken }}' https://api.github.com/repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files | jq -r .[].filename)}" >> $GITHUB_OUTPUT
       - run: "echo URL called: GET /repos/${{ inputs.owner_repo }}/pulls/${{ inputs.pr_num }}/files"
       - name: Set output vars
         id: set_output
-        run: '[[ "${{steps.get_file_data.outputs.file_list}}" == "CHANGELOG.md" ]] && echo "::set-output name=changelog_only::true" || echo "::set-output name=changelog_only::false"'
+        run: '[[ "${{steps.get_file_data.outputs.file_list}}" == "CHANGELOG.md" ]] && echo "{changelog_only}={true}" >> $GITHUB_OUTPUT || echo "{changelog_only}={false}" >> $GITHUB_OUTPUT'
