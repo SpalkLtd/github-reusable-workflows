@@ -28,7 +28,7 @@ jobs:
                   GITHUB_PR_TITLE="${GITHUB_PR_TITLE^^}"
                   GITHUB_PR_TITLE="${GITHUB_PR_TITLE#"CUT VERSION "}"
                   GITHUB_PR_TAG="${GITHUB_PR_TITLE%% *}"
-                  echo "::set-output name=version::$GITHUB_PR_TAG"
+                  echo "echo {version}={$GITHUB_PR_TAG} >> $GITHUB_OUTPUT"
             - name: Create Release
               uses: actions/github-script@v3
               with:
