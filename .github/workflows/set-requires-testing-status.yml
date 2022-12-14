@@ -72,7 +72,7 @@ jobs:
           RESULTS: ${{ steps.read_worksheet.outputs.results }}
       run: |
         echo "ticket number = ${{ steps.find_ticket_number.outputs.TICKET_NUMBER }}"
-        ROW_NUMBER=$(echo "$RESULTS" |  jq '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and .[1]=="${{ steps.find_ticket_number.outputs.TICKET_NUMBER }}") | index(true)+1')
+        ROW_NUMBER=$(echo "$RESULTS" |  jq -e '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and .[1]=="${{ steps.find_ticket_number.outputs.TICKET_NUMBER }}") | index(true) | tostring | tonumber + 1')
         echo "row = $ROW_NUMBER"
         echo "ROW_NUMBER=$ROW_NUMBER" >> $GITHUB_OUTPUT
     - id: 'update_worksheet'
