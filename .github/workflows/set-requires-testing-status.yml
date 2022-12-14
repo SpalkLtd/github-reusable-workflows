@@ -45,7 +45,7 @@ jobs:
       id: find_ticket_number
       run: |
         # find the ticket number in the commit string
-        TICKET_NUMBER=$(echo "${{ inputs.commit_msg }}" | grep -oP "(SA-[0-9]*)")
+        TICKET_NUMBER=$(echo "${{ inputs.commit_msg }}" | grep -oP "(SA-[0-9]*) | head -n1")
         # store the ticket number in an output
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
 
