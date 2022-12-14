@@ -20,16 +20,15 @@ on:
         description: 'Worksheet title to edit'
         required: true
         type: string
-      SPREADSHEET_ID:
-        description: 'Google Sheet ID'
-        required: true
-        type: string
     secrets:
       GSHEET_CLIENT_EMAIL:
         description: 'Github commit message. Usually: github.event.head_commit.message'
         required: true
       GSHEET_PRIVATE_KEY:
         description: 'Github commit message. Usually: github.event.head_commit.message'
+        required: true
+      SPREADSHEET_ID:
+        description: 'Google Sheet ID'
         required: true
 
 # A workflow run is made up of one or more jobs that can run sequentially or in parallel
