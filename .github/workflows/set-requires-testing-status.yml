@@ -93,5 +93,8 @@ jobs:
         GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
         STATUS_COLUMN: "D"
         WORKSHEET_TITLE: ${{ inputs.worksheet_title }}
+    - id: always_succeed
+      if: always()
+      run: echo 'succeeding'
 
 
