@@ -45,12 +45,13 @@ jobs:
       id: find_ticket_number
       run: |
         # find the ticket number in the commit string
-        TICKET_NUMBER=$(echo "${{ inputs.commit_msg }}" | grep -oP -m1 "(SA-[0-9]*)")
+        TICKET_NUMBER=$(echo "${{ inputs.commit_msg }}" | grep -oP -m1 "(SA-[0-9]*)" || echo '')
         # store the ticket number in an output
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
 
     # Finds the matching row in the google sheet by finding the ticket number in a column specified by the TICKET_NUMBER_COLUMN environment variable
     - id: 'read_worksheet'
+      if: steps.find_ticket_number.outputs.TICKET_NUMBER != ""
       uses: SpalkLtd/gsheet.action@v1.2.0 # you can specify '@release' to always have the latest changes
       with:
         spreadsheetId: ${{ secrets.SPREADSHEET_ID }}
@@ -66,6 +67,7 @@ jobs:
         STATUS_COLUMN: "D"
         WORKSHEET_TITLE: "Dev QA"
     - name: find_matching_row
+      if: steps.find_ticket_number.outputs.TICKET_NUMBER != ""
       id: find_matching_row
       env:
           RESULTS: ${{ steps.read_worksheet.outputs.results }}
@@ -75,6 +77,7 @@ jobs:
         echo "row = $ROW_NUMBER"
         echo "ROW_NUMBER=$ROW_NUMBER" >> $GITHUB_OUTPUT
     - id: 'update_worksheet'
+      if: steps.find_ticket_number.outputs.TICKET_NUMBER != ""
       uses: SpalkLtd/gsheet.action@v1.2.0 # you can specify '@release' to always have the latest changes
       with:
         spreadsheetId: ${{ secrets.SPREADSHEET_ID }}
@@ -93,8 +96,4 @@ jobs:
         GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
         STATUS_COLUMN: "D"
         WORKSHEET_TITLE: ${{ inputs.worksheet_title }}
-    - id: always_succeed
-      if: always()
-      run: echo 'succeeding'
-
 
