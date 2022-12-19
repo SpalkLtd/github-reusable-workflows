@@ -82,7 +82,7 @@ jobs:
         echo "DEPENDENT_REPO=$DEPENDENT_REPO"
 
     - id: insert_row
-      uses: jroehl/gsheet.action@v1.0.0
+      uses: SpalkLtd/gsheet.action@v1.2.0
       with:
         spreadsheetId: "{{ secrets.SPREADSHEET_ID }}"
         commands: |
