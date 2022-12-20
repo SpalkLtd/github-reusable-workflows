@@ -47,6 +47,10 @@ jobs:
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
+    - name: Install pcregrep tool
+      run: |
+        sudo apt-get update
+        sudo apt-get install pcregrep
 
     # Finds the ticket number by parsing the the commit string with the regex /(SA-[0-9]*)/ and taking the first match
     - id: get_data
