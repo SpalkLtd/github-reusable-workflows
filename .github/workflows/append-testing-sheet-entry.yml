@@ -106,7 +106,8 @@ jobs:
                     "${{ steps.get_data.outputs.DEPENDENT_REPO }}"
                   ]
                 ],
-                "worksheetTitle": "${{ inputs.worksheet_title }}"
+                "worksheetTitle": "${{ inputs.worksheet_title }}",
+                "minCol": 1
               } }
             ]
       env:
