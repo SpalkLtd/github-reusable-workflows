@@ -1,0 +1,124 @@
+# This inserts an entry into the "Testing Sheet" which pulls the  
+# information from the PR request body, reducing the number of context switches to 
+# fill out all the required CI steps
+# Requires a google Service Account https://cloud.google.com/iam/docs/service-accounts
+# and that you share the spreadsheet with the service account's email as an editor.
+name: Insert entry in Testing Sheet
+
+on:
+  workflow_call:
+    inputs:
+      repo:
+        description: 'Github repo string. Eg synchroniser'
+        required: true
+        type: string
+      pr_description:
+        description: 'Github PR Description message. Usually: github.event.pull_request.body'
+        required: true
+        type: string
+      pr_title:
+        description: 'Github PR Title. Usually: github.event.pull_request.title'
+        required: true
+        type: string
+      pr_author:
+        description: 'Github PR Author. Usually: github.event.pull_request.user.login'
+        required: true
+        type: string
+      worksheet_title:
+        description: 'Worksheet title to edit'
+        required: true
+        type: string
+    secrets:
+      GSHEET_CLIENT_EMAIL:
+        description: 'Github commit message. Usually: github.event.head_commit.message'
+        required: true
+      GSHEET_PRIVATE_KEY:
+        description: 'Github commit message. Usually: github.event.head_commit.message'
+        required: true
+      SPREADSHEET_ID:
+        description: 'Google Sheet ID'
+        required: true
+
+# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+jobs:
+  insert_row:
+    # The type of runner that the job will run on
+    runs-on: ubuntu-latest
+
+    # Steps represent a sequence of tasks that will be executed as part of the job
+    steps:
+    - name: Install pcregrep tool
+      run: |
+        sudo apt-get update
+        sudo apt-get install pcregrep
+
+    # Finds the ticket number by parsing the the commit string with the regex /(SA-[0-9]*)/ and taking the first match
+    - id: get_data
+      name: get_data
+      run: |
+        # Convert line endings
+        PR_DESC="$(echo "${{ inputs.pr_description }}" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g')"
+
+        #Find data out of PR_DESC
+        TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | pcregrep --only-matching=1 '(SA-[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        OLD_TESTER_COUNT=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Old: (P[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        NEW_TESTER_COUNT=$(echo "$PR_DESC" | pcregrep --only-matching=1 'New: (P[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        TEST_INSTRUCTIONS=$(echo "$PR_DESC" | pcregrep --only-matching=1 --multiline  "(?s)## Instructions(.*)## Number of Testers" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        FEATURE_FLAG_NAME=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Feature Flag Name:(.*?)\\n'  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        ENV_VARS=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Has New ENV\/Config\.json Vars:(.*?)\\n'  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        TF_CHANGES=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Has TF Changes:(.*?)\\n' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        DEPENDENT_REPO=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Dependant on Repo:(.*?)\\n'  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        # store the ticket number in an output
+        echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
+        echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
+        echo "NEW_TESTER_COUNT=$NEW_TESTER_COUNT" >> $GITHUB_OUTPUT
+        echo "TEST_INSTRUCTIONS=$TEST_INSTRUCTIONS" >> $GITHUB_OUTPUT
+        echo "FEATURE_FLAG_NAME=$FEATURE_FLAG_NAME" >> $GITHUB_OUTPUT
+        echo "ENV_VARS=$ENV_VARS" >> $GITHUB_OUTPUT
+        echo "TF_CHANGES=$TF_CHANGES" >> $GITHUB_OUTPUT
+        echo "DEPENDENT_REPO=$DEPENDENT_REPO" >> $GITHUB_OUTPUT
+
+        ## Debug
+        echo "TICKET_NUMBER=$TICKET_NUMBER"
+        echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT"
+        echo "NEW_TESTER_COUNT=$NEW_TESTER_COUNT"
+        echo "TEST_INSTRUCTIONS=$TEST_INSTRUCTIONS"
+        echo "FEATURE_FLAG_NAME=$FEATURE_FLAG_NAME"
+        echo "ENV_VARS=$ENV_VARS"
+        echo "TF_CHANGES=$TF_CHANGES"
+        echo "DEPENDENT_REPO=$DEPENDENT_REPO"
+
+    - id: insert_row
+      uses: SpalkLtd/gsheet.action@v1.2.0
+      with:
+        spreadsheetId: "${{ secrets.SPREADSHEET_ID }}"
+        commands: |
+            [
+              { "command": "appendData", "args": {
+                "data": [
+                  [
+                    "${{ inputs.pr_title }}",
+                    "${{ inputs.repo }}",
+                    "${{ steps.get_data.outputs.TICKET_NUMBER }}",
+                    "PR",
+                    "",
+                    "",
+                    "${{ steps.get_data.outputs.OLD_TESTER_COUNT }}",
+                    "${{ steps.get_data.outputs.NEW_TESTER_COUNT }}",
+                    "${{ steps.get_data.outputs.TEST_INSTRUCTIONS }}",
+                    "${{ inputs.pr_author }}",
+                    "${{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
+                    "${{ steps.get_data.outputs.ENV_VARS }}",
+                    "${{ steps.get_data.outputs.TF_CHANGES }}",
+                    "${{ steps.get_data.outputs.DEPENDENT_REPO }}"
+                  ]
+                ],
+                "worksheetTitle": "${{ inputs.worksheet_title }}",
+                "minCol": 1
+              } }
+            ]
+      env:
+        GSHEET_CLIENT_EMAIL: ${{ secrets.GSHEET_CLIENT_EMAIL }}
+        GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
+
+
