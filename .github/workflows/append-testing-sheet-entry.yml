@@ -69,7 +69,12 @@ jobs:
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
         echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
         echo "NEW_TESTER_COUNT=$NEW_TESTER_COUNT" >> $GITHUB_OUTPUT
-        echo "TEST_INSTRUCTIONS=$TEST_INSTRUCTIONS" >> $GITHUB_OUTPUT
+
+        #Special handling for multiline string
+        echo 'TEST_INSTRUCTIONS<<EOF' >> $GITHUB_ENV
+        echo "$TEST_INSTRUCTIONS" >> $GITHUB_ENV
+        echo 'EOF' >> $GITHUB_ENV
+
         echo "FEATURE_FLAG_NAME=$FEATURE_FLAG_NAME" >> $GITHUB_OUTPUT
         echo "ENV_VARS=$ENV_VARS" >> $GITHUB_OUTPUT
         echo "TF_CHANGES=$TF_CHANGES" >> $GITHUB_OUTPUT
@@ -102,7 +107,7 @@ jobs:
                     "",
                     "${{ steps.get_data.outputs.OLD_TESTER_COUNT }}",
                     "${{ steps.get_data.outputs.NEW_TESTER_COUNT }}",
-                    "${{ steps.get_data.outputs.TEST_INSTRUCTIONS }}",
+                    "${{ env.TEST_INSTRUCTIONS }}",
                     "${{ inputs.pr_author }}",
                     "${{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
                     "${{ steps.get_data.outputs.ENV_VARS }}",
