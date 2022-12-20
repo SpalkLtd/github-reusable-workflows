@@ -60,7 +60,7 @@ jobs:
         TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | grep -oP -m1 "(SA-[0-9]*)" || echo '')
         OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Old: (P[0-9]*)" || echo '')
         NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "New: (P[0-9]*)" || echo '')
-        TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 --multiline  "## Instructions\n((.*\n)*)## Number of Testers" || echo '')
+        TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 --multiline  "## Instructions\n((.*\n)*)## Number of Testers" | sed -z 's/\n/\\n/g' || echo '')
         FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Feature Flag Name:(.*)" || echo '')
         ENV_VARS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has New ENV\/Config\.json Vars:(.*)" || echo '')
         TF_CHANGES=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has TF Changes:(.*)" || echo '')
@@ -69,12 +69,7 @@ jobs:
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
         echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
         echo "NEW_TESTER_COUNT=$NEW_TESTER_COUNT" >> $GITHUB_OUTPUT
-
-        #Special handling for multiline string
-        echo 'TEST_INSTRUCTIONS<<EOF' >> $GITHUB_ENV
-        echo "$TEST_INSTRUCTIONS" >> $GITHUB_ENV
-        echo 'EOF' >> $GITHUB_ENV
-
+        echo "TEST_INSTRUCTIONS=$TEST_INSTRUCTIONS" >> $GITHUB_OUTPUT
         echo "FEATURE_FLAG_NAME=$FEATURE_FLAG_NAME" >> $GITHUB_OUTPUT
         echo "ENV_VARS=$ENV_VARS" >> $GITHUB_OUTPUT
         echo "TF_CHANGES=$TF_CHANGES" >> $GITHUB_OUTPUT
@@ -107,7 +102,7 @@ jobs:
                     "",
                     "${{ steps.get_data.outputs.OLD_TESTER_COUNT }}",
                     "${{ steps.get_data.outputs.NEW_TESTER_COUNT }}",
-                    "${{ env.TEST_INSTRUCTIONS }}",
+                    "${{ steps.get_data.outputs.TEST_INSTRUCTIONS }}",
                     "${{ inputs.pr_author }}",
                     "${{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
                     "${{ steps.get_data.outputs.ENV_VARS }}",
