@@ -84,7 +84,7 @@ jobs:
     - id: insert_row
       uses: SpalkLtd/gsheet.action@v1.2.0
       with:
-        spreadsheetId: "{{ secrets.SPREADSHEET_ID }}"
+        spreadsheetId: "${{ secrets.SPREADSHEET_ID }}"
         commands: |
             [
               { "command": "appendData", "args": {
