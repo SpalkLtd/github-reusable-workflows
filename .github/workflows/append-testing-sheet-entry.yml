@@ -57,10 +57,10 @@ jobs:
         OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Old: (P[0-9]*)" | sed 's/.*: *//g' || echo '')
         NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "New: (P[0-9]*)" | sed 's/.*: *//g' || echo '')
         TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | awk '/## Instructions/,/## Number of Testers/' | sed '1d;$d' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Feature Flag Name:(.*)" | sed 's/.*: *//g' || echo '')
-        ENV_VARS=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has New ENV\/Config\.json Vars:(.*)" | sed 's/.*: *//g' || echo '')
-        TF_CHANGES=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has TF Changes:(.*)" | sed 's/.*: *//g' || echo '')
-        DEPENDENT_REPO=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Dependant on Repo:(.*)" | sed 's/.*: *//g' || echo '')
+        FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Feature Flag Name:(.*)" | sed 's/.*: *//g' | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
+        ENV_VARS=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has New ENV\/Config\.json Vars:(.*)" | sed 's/.*: *//g' | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
+        TF_CHANGES=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has TF Changes:(.*)" | sed 's/.*: *//g' | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
+        DEPENDENT_REPO=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Dependant on Repo:(.*)" | sed 's/.*: *//g' | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
         # store the ticket number in an output
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
         echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
