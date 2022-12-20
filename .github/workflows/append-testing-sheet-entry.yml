@@ -105,12 +105,12 @@ jobs:
                     "{{ steps.get_data.outputs.TF_CHANGES }}",
                     "{{ steps.get_data.outputs.DEPENDENT_REPO }}"
                   ]
-                ]
+                ],
+                "worksheetTitle": "${{ inputs.worksheet_title }}"
               } }
             ]
       env:
         GSHEET_CLIENT_EMAIL: ${{ secrets.GSHEET_CLIENT_EMAIL }}
         GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
-        WORKSHEET_TITLE: ${{ inputs.worksheet_title }}
 
 
