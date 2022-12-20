@@ -56,7 +56,7 @@ jobs:
         TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | grep -oP -m1 "(SA-[0-9]*)" || echo '')
         OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Old: (P[0-9]*)" | sed 's/.*: *//g' || echo '')
         NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "New: (P[0-9]*)" | sed 's/.*: *//g' || echo '')
-        TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | | awk '/## Instructions/,/## Number of Testers/' | sed '1d;$d' | sed -z 's/\n/\\n/g' || echo '')
+        TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | awk '/## Instructions/,/## Number of Testers/' | sed '1d;$d' | sed -z 's/\n/\\n/g' || echo '')
         FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Feature Flag Name:(.*)" | sed 's/.*: *//g' || echo '')
         ENV_VARS=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has New ENV\/Config\.json Vars:(.*)" | sed 's/.*: *//g' || echo '')
         TF_CHANGES=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has TF Changes:(.*)" | sed 's/.*: *//g' || echo '')
