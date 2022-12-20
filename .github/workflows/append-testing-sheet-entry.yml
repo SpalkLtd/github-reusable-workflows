@@ -54,13 +54,13 @@ jobs:
       run: |
         # find the ticket number in the commit string
         TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | grep -oP -m1 "(SA-[0-9]*)" || echo '')
-        OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Old: (P[0-9]*)" || echo '')
-        NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "New: (P[0-9]*)" || echo '')
+        OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Old: (P[0-9]*)" || echo '')
+        NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "New: (P[0-9]*)" || echo '')
         TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 --multiline  "## Instructions\n((.*\n)*)## Number of Testers" || echo '')
-        FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Feature Flag Name:(.*)" || echo '')
-        ENV_VARS=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has New ENV\/Config\.json Vars:(.*)" || echo '')
-        TF_CHANGES=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Has TF Changes:(.*)" || echo '')
-        DEPENDENT_REPO=$(echo "${{ inputs.pr_description }}" | grep -oP -m1 "Dependant on Repo:(.*)" || echo '')
+        FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Feature Flag Name:(.*)" || echo '')
+        ENV_VARS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has New ENV\/Config\.json Vars:(.*)" || echo '')
+        TF_CHANGES=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has TF Changes:(.*)" || echo '')
+        DEPENDENT_REPO=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Dependant on Repo:(.*)" || echo '')
         # store the ticket number in an output
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
         echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
