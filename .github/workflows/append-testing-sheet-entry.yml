@@ -90,20 +90,20 @@ jobs:
               { "command": "appendData", "args": {
                 "data": [
                   [
-                    "{{ inputs.pr_title }}",
-                    "{{ inputs.repo }}",
-                    "{{ steps.get_data.outputs.TICKET_NUMBER }}",
+                    "${{ inputs.pr_title }}",
+                    "${{ inputs.repo }}",
+                    "${{ steps.get_data.outputs.TICKET_NUMBER }}",
                     "PR",
                     "",
                     "",
-                    "{{ steps.get_data.outputs.OLD_TESTER_COUNT }}",
-                    "{{ steps.get_data.outputs.NEW_TESTER_COUNT }}",
-                    "{{ steps.get_data.outputs.TEST_INSTRUCTIONS }}",
-                    "{{ inputs.pr_author }}",
-                    "{{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
-                    "{{ steps.get_data.outputs.ENV_VARS }}",
-                    "{{ steps.get_data.outputs.TF_CHANGES }}",
-                    "{{ steps.get_data.outputs.DEPENDENT_REPO }}"
+                    "${{ steps.get_data.outputs.OLD_TESTER_COUNT }}",
+                    "${{ steps.get_data.outputs.NEW_TESTER_COUNT }}",
+                    "${{ steps.get_data.outputs.TEST_INSTRUCTIONS }}",
+                    "${{ inputs.pr_author }}",
+                    "${{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
+                    "${{ steps.get_data.outputs.ENV_VARS }}",
+                    "${{ steps.get_data.outputs.TF_CHANGES }}",
+                    "${{ steps.get_data.outputs.DEPENDENT_REPO }}"
                   ]
                 ],
                 "worksheetTitle": "${{ inputs.worksheet_title }}"
