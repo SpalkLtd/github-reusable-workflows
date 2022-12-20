@@ -57,14 +57,14 @@ jobs:
       name: get_data
       run: |
         # find the ticket number in the commit string
-        TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | pcregrep --only-matching=1 "(SA-[0-9]*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
-        OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Old: (P[0-9]*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
-        NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "New: (P[0-9]*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
+        TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | pcregrep --only-matching=1 "(SA-[0-9]*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        OLD_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Old: (P[0-9]*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        NEW_TESTER_COUNT=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "New: (P[0-9]*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
         TEST_INSTRUCTIONS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 --multiline  "(?s)## Instructions(.*)## Number of Testers" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Feature Flag Name:(.*)"  | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
-        ENV_VARS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has New ENV\/Config\.json Vars:(.*)"  | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
-        TF_CHANGES=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has TF Changes:(.*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
-        DEPENDENT_REPO=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Dependant on Repo:(.*)"  | sed -E ':a;N;$!ba;s/\r{0,1}\n//g' || echo '')
+        FEATURE_FLAG_NAME=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Feature Flag Name:(.*)"  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        ENV_VARS=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has New ENV\/Config\.json Vars:(.*)"  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        TF_CHANGES=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Has TF Changes:(.*)" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        DEPENDENT_REPO=$(echo "${{ inputs.pr_description }}" | pcregrep --only-matching=1 "Dependant on Repo:(.*)"  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
         # store the ticket number in an output
         echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
         echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
