@@ -13,7 +13,7 @@ on:
         required: true
         type: string
       pr_number:
-        description: 'Github commit message. Usually: github.event.pull_request.number'
+        description: 'Github PR number. Usually: github.event.pull_request.number'
         required: true
         type: string
       worksheet_title:
