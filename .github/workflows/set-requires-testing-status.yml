@@ -65,7 +65,7 @@ jobs:
       run: |
         echo "ticket number = ${{ inputs.pr_number }}"
         echo "$RESULTS"
-        ROW_NUMBER=$(echo "$RESULTS" |  jq -e '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and tonumber(.[13])=="${{ inputs.pr_number }}") | index(true) | tostring | tonumber + 1')
+        ROW_NUMBER=$(echo "$RESULTS" |  jq -e '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and .[13]=="${{ inputs.pr_number }}") | index(true) | tostring | tonumber + 1')
         echo "row = $ROW_NUMBER"
         echo "ROW_NUMBER=$ROW_NUMBER" >> $GITHUB_OUTPUT
     - id: 'update_worksheet'
