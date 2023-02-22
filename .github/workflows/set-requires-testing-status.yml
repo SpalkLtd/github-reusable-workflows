@@ -12,8 +12,8 @@ on:
         description: 'Github repo string. Eg synchroniser'
         required: true
         type: string
-      commit_msg:
-        description: 'Github commit message. Usually: github.event.head_commit.message'
+      pr_number:
+        description: 'Github PR number. Usually: github.event.pull_request.number'
         required: true
         type: string
       worksheet_title:
@@ -22,10 +22,10 @@ on:
         type: string
     secrets:
       GSHEET_CLIENT_EMAIL:
-        description: 'Github commit message. Usually: github.event.head_commit.message'
+        description: 'Client email of the service account'
         required: true
       GSHEET_PRIVATE_KEY:
-        description: 'Github commit message. Usually: github.event.head_commit.message'
+        description: 'Private key of the service account'
         required: true
       SPREADSHEET_ID:
         description: 'Google Sheet ID'
@@ -40,44 +40,35 @@ jobs:
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
 
-    # Finds the ticket number by parsing the the commit string with the regex /(SA-[0-9]*)/ and taking the first match
-    - name: find_ticket_number
-      id: find_ticket_number
-      run: |
-        # find the ticket number in the commit string
-        TICKET_NUMBER=$(echo "${{ inputs.commit_msg }}" | grep -oP -m1 "(SA-[0-9]*)" || echo '')
-        # store the ticket number in an output
-        echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
-
-    # Finds the matching row in the google sheet by finding the ticket number in a column specified by the TICKET_NUMBER_COLUMN environment variable
+    # Finds the matching row in the google sheet by finding the ticket number in a column specified by the PR_NUMBER_COLUMN environment variable
     - id: 'read_worksheet'
-      if: steps.find_ticket_number.outputs.TICKET_NUMBER != ''
+      if: inputs.pr_number != ''
       uses: SpalkLtd/gsheet.action@v1.2.0 # you can specify '@release' to always have the latest changes
       with:
         spreadsheetId: ${{ secrets.SPREADSHEET_ID }}
         commands: | # list of commands, specified as a valid JSON string
           [
-            { "command": "getData", "args": { "range": "'${{ env.WORKSHEET_TITLE }}'!${{ env.REPO_COLUMN }}:${{ env.TICKET_NUMBER_COLUMN }}" }}
+            { "command": "getData", "args": { "range": "'${{ env.WORKSHEET_TITLE }}'!${{ env.REPO_COLUMN }}:${{ env.PR_NUMBER_COLUMN }}" }}
           ]
       env:
         GSHEET_CLIENT_EMAIL: ${{ secrets.GSHEET_CLIENT_EMAIL }}
         GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
-        TICKET_NUMBER_COLUMN: "C"
+        PR_NUMBER_COLUMN: "O"
         REPO_COLUMN: "B"
         STATUS_COLUMN: "D"
         WORKSHEET_TITLE: "Dev QA"
     - name: find_matching_row
-      if: steps.find_ticket_number.outputs.TICKET_NUMBER != ''
+      if: inputs.pr_number != ''
       id: find_matching_row
       env:
           RESULTS: ${{ steps.read_worksheet.outputs.results }}
       run: |
-        echo "ticket number = ${{ steps.find_ticket_number.outputs.TICKET_NUMBER }}"
-        ROW_NUMBER=$(echo "$RESULTS" |  jq -e '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and .[1]=="${{ steps.find_ticket_number.outputs.TICKET_NUMBER }}") | index(true) | tostring | tonumber + 1')
+        echo "ticket number = ${{ inputs.pr_number }}"
+        ROW_NUMBER=$(echo "$RESULTS" |  jq -e '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and .[1]=="${{ inputs.pr_number }}") | index(true) | tostring | tonumber + 1')
         echo "row = $ROW_NUMBER"
         echo "ROW_NUMBER=$ROW_NUMBER" >> $GITHUB_OUTPUT
     - id: 'update_worksheet'
-      if: steps.find_ticket_number.outputs.TICKET_NUMBER != ''
+      if: inputs.pr_number != ''
       uses: SpalkLtd/gsheet.action@v1.2.0 # you can specify '@release' to always have the latest changes
       with:
         spreadsheetId: ${{ secrets.SPREADSHEET_ID }}

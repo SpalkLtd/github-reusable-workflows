@@ -24,6 +24,10 @@ on:
         description: 'Github PR Author. Usually: github.event.pull_request.user.login'
         required: true
         type: string
+      pr_number:
+        description: 'Github PR Number. Usually: github.event.pull_request.number'
+        required: true
+        type: string
       worksheet_title:
         description: 'Worksheet title to edit'
         required: true
@@ -110,7 +114,8 @@ jobs:
                     "${{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
                     "${{ steps.get_data.outputs.ENV_VARS }}",
                     "${{ steps.get_data.outputs.TF_CHANGES }}",
-                    "${{ steps.get_data.outputs.DEPENDENT_REPO }}"
+                    "${{ steps.get_data.outputs.DEPENDENT_REPO }}",
+                    "${{ inputs.pr_number }}"
                   ]
                 ],
                 "worksheetTitle": "${{ inputs.worksheet_title }}",
