@@ -44,7 +44,7 @@ on:
 
 jobs:
   build-and-deploy-ecr-image:
-    name: Build and Deploy PR ECR Image
+    name: Build and Deploy ECR Image
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -55,8 +55,6 @@ jobs:
         with:
           role-to-assume: ${{ inputs.aws-role }}
           aws-region: ${{ inputs.aws-region }}
-          # role-to-assume: arn:aws:iam::496668274218:role/dev_output-service_github_execution_role
-          # aws-region: us-east-2
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
@@ -79,6 +77,7 @@ jobs:
       # step to correctly access github. It corrects the paths. We are not copying actual private keys, they are held in-memory at all
       # times by the ssh-agent, and crypto functions are done over the env.SSH_AUTH_SOCK socket.
       - name: Collect Git and SSH config files
+        if: ${{ secrets.ssh-private-key != '' }}
         run: |
           cp -f ~/.gitconfig docker/gitconfig/gitconfig
           cp -r ~/.ssh/* docker/ssh
