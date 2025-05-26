@@ -32,7 +32,7 @@ on:
         required: false
         type: string
         default: '[]'  # Default to empty array. Github Actions does not support array values on inputs, so we use this default value.
-      docker-build-args:
+      build-args:
         description: 'Docker build arguments (multiline string, one per line in KEY=VALUE format)'
         required: false
         type: string
@@ -94,7 +94,7 @@ jobs:
         with:
           ssh: ${{ inputs.use-ssh && secrets.ssh-private-key != '' && format('default={0}', env.SSH_AUTH_SOCK) || '' }}
           context: . # why is this not a default? not a clue. Don't remove it.
-          build-args: ${{ inputs.docker-build-args }}
+          build-args: ${{ inputs.build-args }}
           push: true
           load: true
           tags: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}
