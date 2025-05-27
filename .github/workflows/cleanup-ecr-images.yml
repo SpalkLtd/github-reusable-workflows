@@ -1,3 +1,7 @@
+# This workflow is intended to clean up ECR images created by the
+# `build-and-deploy-ecr-image.yml` workflow.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
 name: Clean up select ECR Images
 
 on:

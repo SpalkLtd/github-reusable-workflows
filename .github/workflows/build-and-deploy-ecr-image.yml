@@ -1,3 +1,8 @@
+# This workflow builds a Docker image using Buildx and pushes it to Amazon ECR.
+# It supports multi-region deployments and can use SSH for private repositories.
+# The workflow is designed to be reusable and can be called from other workflows.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
 name: Build and Deploy ECR Image
 
 on:
