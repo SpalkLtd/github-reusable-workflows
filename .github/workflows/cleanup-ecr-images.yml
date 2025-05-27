@@ -1,0 +1,86 @@
+name: Clean up select ECR Images
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: 'AWS IAM role to assume'
+        required: true
+        type: string
+      aws-region:
+        description: 'AWS region for deployment'
+        required: true
+        type: string
+      repository-name:
+        description: 'The docker image repository name.'
+        required: true
+        type: string
+      media-region-repository-name:
+        description: 'The media region docker image repository name.'
+        required: false
+        type: string
+      media-regions:
+        description: 'List of media regions to push to (JSON array format, e.g. ["us-east-1", "eu-west-1"])'
+        required: false
+        type: string
+        default: '[]'  # Default to empty array. Github Actions does not support array values on inputs, so we use this default value.
+      tag-prefix:
+        description: 'Prefix for the image tag to clean up'
+        required: true
+        type: string
+jobs:
+  remove_ecr_images:
+    name: Clean up PR ECR Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Clean up PR ECR Images
+        run: |
+          # Function to clean up PR images in a specific repository and region
+          cleanup_pr_images() {
+            local region=$1
+            local repository=$2
+            local pr_prefix=$3
+
+            echo "Processing repository: $repository in region: $region"
+
+            digests=$(aws ecr describe-images \
+              --repository-name "$repository" \
+              --region "$region" \
+              --filter "tagStatus=TAGGED" \
+              --query "imageDetails[?contains(to_string(imageTags), \`$pr_prefix\`) == \`true\`].[imageDigest]" \
+              --output text)
+
+            image_ids=""
+            for digest in $digests; do
+              image_ids+="imageDigest=$digest "
+            done
+
+            echo "Deleting images: \n$digests\n"
+            aws ecr batch-delete-image \
+              --repository-name "$repository" \
+              --region "$region" \
+              --image-ids $image_ids
+          }
+
+          # Main execution
+          echo "Starting ECR image cleanup."
+
+          # Clean up main repository
+          cleanup_pr_images "us-east-2" "${{ inputs.repository-name }}" "${{ inputs.tag-prefix }}"
+
+          # Clean up media regions if provided
+          if [ -n "${{ inputs.media-region-repository-name }}" ] && [ "${{ inputs.media-regions }}" != "[]" ]; then
+            # Parse media regions from JSON input
+            REGIONS_JSON='${{ inputs.media-regions }}'
+            
+            # Convert JSON array to bash array and iterate
+            while IFS= read -r region; do
+              cleanup_pr_images "$region" "${{ inputs.media-region-repository-name }}" "${{ inputs.tag-prefix }}"
+            done < <(echo "$REGIONS_JSON" | jq -r '.[]')
+          fi

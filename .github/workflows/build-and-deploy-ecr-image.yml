@@ -1,0 +1,138 @@
+name: Build and Deploy ECR Image
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: 'Tag for the Docker image.'
+        required: true
+        type: string
+      aws-role:
+        description: 'AWS IAM role to assume'
+        required: true
+        type: string
+      aws-region:
+        description: 'AWS region for deployment'
+        required: true
+        type: string
+      dockerfile:
+        description: 'The Dockerfile to build'
+        required: true
+        type: string
+      repository-name:
+        description: 'The docker image repository name, i.e. spalk_social_media_server'
+        required: true
+        type: string
+      media-region-repository-name:
+        description: 'The media region docker image repository name, i.e. spalk_social_media_server'
+        required: false
+        type: string
+      media-regions:
+        description: 'List of media regions to push to (JSON array format, e.g. ["us-east-1", "eu-west-1"])'
+        required: false
+        type: string
+        default: '[]'  # Default to empty array. Github Actions does not support array values on inputs, so we use this default value.
+      build-args:
+        description: 'Docker build arguments (multiline string, one per line in KEY=VALUE format)'
+        required: false
+        type: string
+        default: ''
+      use-ssh:
+        description: 'Whether to use SSH for private repositories'
+        required: false
+        type: boolean
+        default: false
+    secrets:
+      ssh-private-key:
+        description: 'SSH keys for accessing private repositories. If not provided, no SSH agent will be configured for the docker build.'
+        required: false
+
+jobs:
+  build-and-deploy-ecr-image:
+    name: Build and Deploy ECR Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
+
+      - name: Login to buildcache registry
+        id:   login-ecr
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+  
+      # Configure deploy SSH keys to download private repos
+      # Note, you need to add Repo URL to the key comment so this action knows what to do with it
+      # Details: https://github.com/SpalkLtd/ssh-agent#support-for-github-deploy-keys
+      # Automated key rolling script: https://github.com/SpalkLtd/utils/blob/main/actions/deploy_keys.sh
+      - name: Allow access to Spalk Private repositories
+        uses: SpalkLtd/ssh-agent@26e485b72da53538f103f191ddd325d2f2ef3771
+        if: ${{ inputs.use-ssh }}
+        with:
+          ssh-private-key: ${{ secrets.ssh-private-key }}
+
+      # This action copies the ~/.gitconfig and ~/.ssh files from the host, that were configured by the previous SpalkLtd/ssg-agent
+      # step to correctly access github. It corrects the paths. We are not copying actual private keys, they are held in-memory at all
+      # times by the ssh-agent, and crypto functions are done over the env.SSH_AUTH_SOCK socket.
+      - name: Collect Git and SSH config files
+        if: ${{ inputs.use-ssh }}
+        run: |
+          cp -f ~/.gitconfig docker/gitconfig/gitconfig
+          cp -r ~/.ssh/* docker/ssh
+          sed 's|/home/runner|/root|g' -i.bak docker/ssh/config
+
+      - name: Build and push docker image
+        id: docker-build
+        uses: docker/build-push-action@471d1dc4e07e5cdedd4c2171150001c434f0b7a4
+        with:
+          ssh: ${{ inputs.use-ssh && secrets.ssh-private-key != '' && format('default={0}', env.SSH_AUTH_SOCK) || '' }}
+          context: . # why is this not a default? not a clue. Don't remove it.
+          build-args: ${{ inputs.build-args }}
+          push: true
+          load: true
+          tags: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}
+          platforms: linux/amd64
+          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:cache
+          cache-to: mode=max,image-manifest=true,oci-mediatypes=true,type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:cache
+          file: ${{ inputs.dockerfile }}
+
+      - name: Push to ECR in media regions
+        if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
+        run: |
+          set -eo pipefail
+          
+          # Parse media regions from JSON input
+          REGIONS_JSON='${{ inputs.media-regions }}'
+          
+          # Convert JSON array to bash array
+          regions=()
+          while IFS= read -r region; do
+            regions+=("$region")
+          done < <(echo "$REGIONS_JSON" | jq -r '.[]')
+
+          SOURCE_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}"
+                    
+          echo "Source image: $SOURCE_IMAGE"
+          echo "Source image digest: ${{ steps.docker-build.outputs.digest }}"
+                    
+          # Loop through each region
+          for region in "${regions[@]}"; do
+            echo "=== Processing region: $region ==="
+            aws ecr get-login-password --region $region | docker login --username AWS --password-stdin 496668274218.dkr.ecr.$region.amazonaws.com
+            
+            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/${{ inputs.regional-repository-name }}:${{ inputs.tag }}"
+
+            # This rather confusingly named command, will copy $SOURCE_IMAGE to $DEST_IMAGE.
+            # It is required as the normal tag and push commands will end up changing the image digest, due to differences
+            # in how they work and buildx work.
+            docker buildx imagetools create --tag $DEST_IMAGE $SOURCE_IMAGE
+
+            echo "[$region] Successfully pushed to region"
+          done
