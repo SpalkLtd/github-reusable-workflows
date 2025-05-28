@@ -130,7 +130,7 @@ jobs:
           # Convert JSON array to bash array
           regions=()
           while IFS= read -r region; do
-            regions+=("$region")q
+            regions+=("$region")
           done < <(echo "$REGIONS_JSON" | jq -r '.[]')
 
           SOURCE_IMAGE="${{ inputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}"
