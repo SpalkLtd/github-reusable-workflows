@@ -12,6 +12,10 @@ on:
         description: 'Tag for the Docker image.'
         required: true
         type: string
+      registry:
+        description: 'Registry for the Docker image.'
+        required: true
+        type: string
       aws-role:
         description: 'AWS IAM role to assume'
         required: true
@@ -109,10 +113,10 @@ jobs:
           build-args: ${{ inputs.build-args }}
           push: true
           load: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}
+          tags: ${{ inputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}
           platforms: linux/amd64
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:cache
-          cache-to: mode=max,image-manifest=true,oci-mediatypes=true,type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:cache
+          cache-from: type=registry,ref=${{ inputs.registry }}/${{ inputs.repository-name }}:cache
+          cache-to: mode=max,image-manifest=true,oci-mediatypes=true,type=registry,ref=${{ inputs.registry }}/${{ inputs.repository-name }}:cache
           file: ${{ inputs.dockerfile }}
 
       - name: Push to ECR in media regions
@@ -129,7 +133,7 @@ jobs:
             regions+=("$region")
           done < <(echo "$REGIONS_JSON" | jq -r '.[]')
 
-          SOURCE_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}"
+          SOURCE_IMAGE="${{ inputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}"
                     
           echo "Source image: $SOURCE_IMAGE"
           echo "Source image digest: ${{ steps.docker-build.outputs.digest }}"
