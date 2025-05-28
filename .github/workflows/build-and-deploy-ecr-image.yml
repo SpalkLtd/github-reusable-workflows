@@ -69,10 +69,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
 
-      - name: Login to buildcache registry
+      - name: Login to dev registry
         id:   login-ecr
         uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
-  
+        env:
+          AWS_REGION: us-east-2
+
+      - name: Login to prod registry
+        id:   login-ecr
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+        env:
+          AWS_REGION: us-east-1
       # Configure deploy SSH keys to download private repos
       # Note, you need to add Repo URL to the key comment so this action knows what to do with it
       # Details: https://github.com/SpalkLtd/ssh-agent#support-for-github-deploy-keys
