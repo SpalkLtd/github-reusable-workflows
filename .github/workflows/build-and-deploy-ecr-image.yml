@@ -143,13 +143,12 @@ jobs:
             echo "=== Processing region: $region ==="
             aws ecr get-login-password --region $region | docker login --username AWS --password-stdin 496668274218.dkr.ecr.$region.amazonaws.com
             
-            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/${{ inputs.regional-repository-name }}:${{ inputs.tag }}"
+            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/${{ inputs.media-region-repository-name }}:${{ inputs.tag }}"
 
             # This rather confusingly named command, will copy $SOURCE_IMAGE to $DEST_IMAGE.
             # It is required as the normal tag and push commands will end up changing the image digest, due to differences
             # in how they work and buildx work.
             echo "[$region] Copying image from $SOURCE_IMAGE to $DEST_IMAGE"
-            echo "docker buildx imagetools create --tag $DEST_IMAGE $SOURCE_IMAGE"
             docker buildx imagetools create --tag $DEST_IMAGE $SOURCE_IMAGE
 
             echo "[$region] Successfully pushed to region"
