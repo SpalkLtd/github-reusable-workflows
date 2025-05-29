@@ -69,10 +69,17 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
 
-      - name: Login to buildcache registry
-        id:   login-ecr
+      - name: Login to dev registry
+        id:   login-ecr-dev
         uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
-  
+        env:
+          AWS_REGION: us-east-2
+
+      - name: Login to prod registry
+        id:   login-ecr-prod
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
+        env:
+          AWS_REGION: us-east-1
       # Configure deploy SSH keys to download private repos
       # Note, you need to add Repo URL to the key comment so this action knows what to do with it
       # Details: https://github.com/SpalkLtd/ssh-agent#support-for-github-deploy-keys
@@ -102,10 +109,10 @@ jobs:
           build-args: ${{ inputs.build-args }}
           push: true
           load: true
-          tags: ${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}
+          tags: 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:${{ inputs.tag }}
           platforms: linux/amd64
-          cache-from: type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:cache
-          cache-to: mode=max,image-manifest=true,oci-mediatypes=true,type=registry,ref=${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:cache
+          cache-from: type=registry,ref=496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:cache
+          cache-to: mode=max,image-manifest=true,oci-mediatypes=true,type=registry,ref=496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:cache
           file: ${{ inputs.dockerfile }}
 
       - name: Push to ECR in media regions
@@ -122,7 +129,7 @@ jobs:
             regions+=("$region")
           done < <(echo "$REGIONS_JSON" | jq -r '.[]')
 
-          SOURCE_IMAGE="${{ steps.login-ecr.outputs.registry }}/${{ inputs.repository-name }}:${{ inputs.tag }}"
+          SOURCE_IMAGE="496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:${{ inputs.tag }}"
                     
           echo "Source image: $SOURCE_IMAGE"
           echo "Source image digest: ${{ steps.docker-build.outputs.digest }}"
@@ -132,11 +139,12 @@ jobs:
             echo "=== Processing region: $region ==="
             aws ecr get-login-password --region $region | docker login --username AWS --password-stdin 496668274218.dkr.ecr.$region.amazonaws.com
             
-            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/${{ inputs.regional-repository-name }}:${{ inputs.tag }}"
+            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/${{ inputs.media-region-repository-name }}:${{ inputs.tag }}"
 
             # This rather confusingly named command, will copy $SOURCE_IMAGE to $DEST_IMAGE.
             # It is required as the normal tag and push commands will end up changing the image digest, due to differences
             # in how they work and buildx work.
+            echo "[$region] Copying image from $SOURCE_IMAGE to $DEST_IMAGE"
             docker buildx imagetools create --tag $DEST_IMAGE $SOURCE_IMAGE
 
             echo "[$region] Successfully pushed to region"
