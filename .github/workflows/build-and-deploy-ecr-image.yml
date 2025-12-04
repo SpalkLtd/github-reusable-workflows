@@ -9,58 +9,63 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: 'Tag for the Docker image.'
+        description: "Tag for the Docker image."
         required: true
         type: string
       aws-role:
-        description: 'AWS IAM role to assume'
+        description: "AWS IAM role to assume"
         required: true
         type: string
       aws-region:
-        description: 'AWS region for deployment'
+        description: "AWS region for deployment"
         required: true
         type: string
       dockerfile:
-        description: 'The Dockerfile to build'
+        description: "The Dockerfile to build"
         required: true
         type: string
       repository-name:
-        description: 'The docker image repository name, i.e. spalk_social_media_server'
+        description: "The docker image repository name, i.e. spalk_social_media_server"
         required: true
         type: string
       media-region-repository-name:
-        description: 'The media region docker image repository name, i.e. spalk_social_media_server'
+        description: "The media region docker image repository name, i.e. spalk_social_media_server"
         required: false
         type: string
       media-regions:
         description: 'List of media regions to push to (JSON array format, e.g. ["us-east-1", "eu-west-1"])'
         required: false
         type: string
-        default: '[]'  # Default to empty array. Github Actions does not support array values on inputs, so we use this default value.
+        default: "[]" # Default to empty array. Github Actions does not support array values on inputs, so we use this default value.
       build-args:
-        description: 'Docker build arguments (multiline string, one per line in KEY=VALUE format)'
+        description: "Docker build arguments (multiline string, one per line in KEY=VALUE format)"
         required: false
         type: string
-        default: ''
+        default: ""
       use-ssh:
-        description: 'Whether to use SSH for private repositories'
+        description: "Whether to use SSH for private repositories"
         required: false
         type: boolean
         default: false
       platforms:
-        description: 'Target platforms for multi-architecture builds (e.g., linux/amd64,linux/arm64)'
+        description: "Target platforms for multi-architecture builds (e.g., linux/amd64,linux/arm64)"
         required: false
         type: string
-        default: 'linux/amd64'
+        default: "linux/amd64"
+      runner:
+        description: "The type of runner to use"
+        required: false
+        type: string
+        default: "ubuntu-latest"
     secrets:
       ssh-private-key:
-        description: 'SSH keys for accessing private repositories. If not provided, no SSH agent will be configured for the docker build.'
+        description: "SSH keys for accessing private repositories. If not provided, no SSH agent will be configured for the docker build."
         required: false
 
 jobs:
   build-and-deploy-ecr-image:
     name: Build and Deploy ECR Image
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -75,13 +80,13 @@ jobs:
         uses: docker/setup-buildx-action@b5ca514318bd6ebac0fb2aedd5d36ec1b5c232a2
 
       - name: Login to dev registry
-        id:   login-ecr-dev
+        id: login-ecr-dev
         uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
         env:
           AWS_REGION: us-east-2
 
       - name: Login to prod registry
-        id:   login-ecr-prod
+        id: login-ecr-prod
         uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076
         env:
           AWS_REGION: us-east-1
@@ -113,7 +118,7 @@ jobs:
           context: . # why is this not a default? not a clue. Don't remove it.
           build-args: ${{ inputs.build-args }}
           push: true
-          load: ${{ !contains(inputs.platforms, ',') }}  # Only load for single-platform builds
+          load: ${{ !contains(inputs.platforms, ',') }} # Only load for single-platform builds
           tags: 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:${{ inputs.tag }}
           platforms: ${{ inputs.platforms }}
           cache-from: type=registry,ref=496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:cache
@@ -124,10 +129,10 @@ jobs:
         if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
         run: |
           set -eo pipefail
-          
+
           # Parse media regions from JSON input
           REGIONS_JSON='${{ inputs.media-regions }}'
-          
+
           # Convert JSON array to bash array
           regions=()
           while IFS= read -r region; do

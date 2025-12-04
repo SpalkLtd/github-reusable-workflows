@@ -10,3 +10,4 @@
 - Add PR number to data inserted in `append-testing-sheet-entry.yml`
 - Use PR number to match rows in `set-requires-testing-status.yml`
 - Add `platforms` input argument to build-and-deploy-ecr-image.yml
+- Add `runner` input argument to build-and-deploy-ecr-image.yml
