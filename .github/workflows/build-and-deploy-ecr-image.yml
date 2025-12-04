@@ -47,6 +47,11 @@ on:
         required: false
         type: boolean
         default: false
+      platforms:
+        description: 'Target platforms for multi-architecture builds (e.g., linux/amd64,linux/arm64)'
+        required: false
+        type: string
+        default: 'linux/amd64'
     secrets:
       ssh-private-key:
         description: 'SSH keys for accessing private repositories. If not provided, no SSH agent will be configured for the docker build.'
@@ -108,9 +113,9 @@ jobs:
           context: . # why is this not a default? not a clue. Don't remove it.
           build-args: ${{ inputs.build-args }}
           push: true
-          load: true
+          load: ${{ !contains(inputs.platforms, ',') }}  # Only load for single-platform builds
           tags: 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:${{ inputs.tag }}
-          platforms: linux/amd64
+          platforms: ${{ inputs.platforms }}
           cache-from: type=registry,ref=496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:cache
           cache-to: mode=max,image-manifest=true,oci-mediatypes=true,type=registry,ref=496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:cache
           file: ${{ inputs.dockerfile }}
