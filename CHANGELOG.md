@@ -12,3 +12,4 @@
 - Add `platforms` input argument to build-and-deploy-ecr-image.yml
 - Add `runner` input argument to build-and-deploy-ecr-image.yml
 - Replace deprecated `::set-output` with `$GITHUB_OUTPUT` and upgrade all third-party actions to latest versions (SHA-pinned)
+- Move `${{ }}` expressions out of `run:` blocks into `env:` to prevent shell injection

@@ -127,29 +127,34 @@ jobs:
 
       - name: Push to ECR in media regions
         if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
+        env:
+          MEDIA_REGIONS: ${{ inputs.media-regions }}
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
+          REPOSITORY_NAME: ${{ inputs.repository-name }}
+          IMAGE_TAG: ${{ inputs.tag }}
+          MEDIA_REGION_REPOSITORY_NAME: ${{ inputs.media-region-repository-name }}
+          DOCKER_BUILD_DIGEST: ${{ steps.docker-build.outputs.digest }}
         run: |
           set -eo pipefail
 
           # Parse media regions from JSON input
-          REGIONS_JSON='${{ inputs.media-regions }}'
-
           # Convert JSON array to bash array
           regions=()
           while IFS= read -r region; do
             regions+=("$region")
-          done < <(echo "$REGIONS_JSON" | jq -r '.[]')
+          done < <(echo "$MEDIA_REGIONS" | jq -r '.[]')
 
-          SOURCE_IMAGE="496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com/${{ inputs.repository-name }}:${{ inputs.tag }}"
-                    
+          SOURCE_IMAGE="496668274218.dkr.ecr.$AWS_REGION_INPUT.amazonaws.com/$REPOSITORY_NAME:$IMAGE_TAG"
+
           echo "Source image: $SOURCE_IMAGE"
-          echo "Source image digest: ${{ steps.docker-build.outputs.digest }}"
-                    
+          echo "Source image digest: $DOCKER_BUILD_DIGEST"
+
           # Loop through each region
           for region in "${regions[@]}"; do
             echo "=== Processing region: $region ==="
             aws ecr get-login-password --region $region | docker login --username AWS --password-stdin 496668274218.dkr.ecr.$region.amazonaws.com
-            
-            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/${{ inputs.media-region-repository-name }}:${{ inputs.tag }}"
+
+            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/$MEDIA_REGION_REPOSITORY_NAME:$IMAGE_TAG"
 
             # This rather confusingly named command, will copy $SOURCE_IMAGE to $DEST_IMAGE.
             # It is required as the normal tag and push commands will end up changing the image digest, due to differences

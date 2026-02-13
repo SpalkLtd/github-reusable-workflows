@@ -44,6 +44,11 @@ jobs:
           aws-region: ${{ inputs.aws-region }}
 
       - name: Clean up PR ECR Images
+        env:
+          REPOSITORY_NAME: ${{ inputs.repository-name }}
+          TAG_PREFIX: ${{ inputs.tag-prefix }}
+          MEDIA_REGION_REPOSITORY_NAME: ${{ inputs.media-region-repository-name }}
+          MEDIA_REGIONS: ${{ inputs.media-regions }}
         run: |
           # Function to clean up PR images in a specific repository and region
           cleanup_pr_images() {
@@ -76,15 +81,13 @@ jobs:
           echo "Starting ECR image cleanup."
 
           # Clean up main repository
-          cleanup_pr_images "us-east-2" "${{ inputs.repository-name }}" "${{ inputs.tag-prefix }}"
+          cleanup_pr_images "us-east-2" "$REPOSITORY_NAME" "$TAG_PREFIX"
 
           # Clean up media regions if provided
-          if [ -n "${{ inputs.media-region-repository-name }}" ] && [ "${{ inputs.media-regions }}" != "[]" ]; then
+          if [ -n "$MEDIA_REGION_REPOSITORY_NAME" ] && [ "$MEDIA_REGIONS" != "[]" ]; then
             # Parse media regions from JSON input
-            REGIONS_JSON='${{ inputs.media-regions }}'
-            
             # Convert JSON array to bash array and iterate
             while IFS= read -r region; do
-              cleanup_pr_images "$region" "${{ inputs.media-region-repository-name }}" "${{ inputs.tag-prefix }}"
-            done < <(echo "$REGIONS_JSON" | jq -r '.[]')
+              cleanup_pr_images "$region" "$MEDIA_REGION_REPOSITORY_NAME" "$TAG_PREFIX"
+            done < <(echo "$MEDIA_REGIONS" | jq -r '.[]')
           fi
