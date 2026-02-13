@@ -62,10 +62,12 @@ jobs:
       id: find_matching_row
       env:
           RESULTS: ${{ steps.read_worksheet.outputs.results }}
+          REPO: ${{ inputs.repo }}
+          PR_NUMBER: ${{ inputs.pr_number }}
       run: |
-        echo "ticket number = ${{ inputs.pr_number }}"
+        echo "ticket number = $PR_NUMBER"
         echo "$RESULTS"
-        ROW_NUMBER=$(echo "$RESULTS" |  jq -e '.results[0].result.rawData | map(.[0]=="${{ inputs.repo }}" and .[13]=="${{ inputs.pr_number }}") | index(true) | tostring | tonumber + 1')
+        ROW_NUMBER=$(echo "$RESULTS" | jq -e --arg repo "$REPO" --arg pr "$PR_NUMBER" '.results[0].result.rawData | map(.[0]==$repo and .[13]==$pr) | index(true) | tostring | tonumber + 1')
         echo "row = $ROW_NUMBER"
         echo "ROW_NUMBER=$ROW_NUMBER" >> $GITHUB_OUTPUT
     - id: 'update_worksheet'

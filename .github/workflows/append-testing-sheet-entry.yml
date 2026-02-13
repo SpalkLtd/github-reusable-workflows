@@ -59,12 +59,15 @@ jobs:
     # Finds the ticket number by parsing the the commit string with the regex /(SA-[0-9]*)/ and taking the first match
     - id: get_data
       name: get_data
+      env:
+        INPUT_PR_DESCRIPTION: ${{ inputs.pr_description }}
+        INPUT_PR_TITLE: ${{ inputs.pr_title }}
       run: |
         # Convert line endings
-        PR_DESC="$(echo "${{ inputs.pr_description }}" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g')"
+        PR_DESC="$(echo "$INPUT_PR_DESCRIPTION" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g')"
 
         #Find data out of PR_DESC
-        TICKET_NUMBER=$(echo "${{ inputs.pr_title }}" | pcregrep --only-matching=1 '(SA-[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
+        TICKET_NUMBER=$(echo "$INPUT_PR_TITLE" | pcregrep --only-matching=1 '(SA-[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
         OLD_TESTER_COUNT=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Old: (P[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
         NEW_TESTER_COUNT=$(echo "$PR_DESC" | pcregrep --only-matching=1 'New: (P[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
         TEST_INSTRUCTIONS=$(echo "$PR_DESC" | pcregrep --only-matching=1 --multiline  "(?s)## Instructions(.*)## Number of Testers" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
