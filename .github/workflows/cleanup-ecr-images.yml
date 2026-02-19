@@ -37,6 +37,14 @@ jobs:
     name: Clean up PR ECR Images
     runs-on: ubuntu-latest
     steps:
+      - name: Validate tag prefix
+        run: |
+          PREFIX="${{ inputs.tag-prefix }}"
+          if [[ "current" == "$PREFIX"* ]]; then
+            echo "::error::Refusing to clean up images matching reserved tag 'current'. Tag prefix '${PREFIX}' would match ':current' tags."
+            exit 1
+          fi
+
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
         with:
