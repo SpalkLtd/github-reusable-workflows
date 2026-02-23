@@ -42,10 +42,13 @@ jobs:
       - name: Validate tag
         run: |
           TAG="${{ inputs.tag }}"
-          if [[ "$TAG" =~ ^current(-amd64|-arm64)?$ ]]; then
-            echo "::error::Refusing to push to reserved tag ':${TAG}'. This workflow must not overwrite the ':current' tag."
-            exit 1
-          fi
+          PROTECTED_TAGS=("current" "latest" "commentator_test_current")
+          for protected in "${PROTECTED_TAGS[@]}"; do
+            if [[ "$TAG" =~ ^${protected}(-amd64|-arm64)?$ ]]; then
+              echo "::error::Refusing to push to reserved tag ':${TAG}'. This workflow must not overwrite the ':${protected}' tag."
+              exit 1
+            fi
+          done
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
