@@ -53,11 +53,13 @@ jobs:
           role-to-assume: ${{ inputs.aws-role }}
           aws-region: ${{ inputs.aws-region }}
 
-      - name: Login to ECR
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+      - name: Install crane
+        uses: imjasonh/setup-crane@6da1ae018866400525525ce74ff892880c099987 # v0.5
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Login to primary ECR
+        run: |
+          crane auth login 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com \
+            -u AWS -p "$(aws ecr get-login-password --region ${{ inputs.aws-region }})"
 
       - name: Create and replicate multi-arch manifest
         env:
@@ -70,12 +72,16 @@ jobs:
           set -eo pipefail
 
           PRIMARY_REGISTRY="496668274218.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com"
+          BASE_IMAGE="${PRIMARY_REGISTRY}/${REPO}"
 
-          echo "Creating multi-arch manifest: ${PRIMARY_REGISTRY}/${REPO}:${TAG}"
-          docker buildx imagetools create \
-            --tag ${PRIMARY_REGISTRY}/${REPO}:${TAG} \
-            ${PRIMARY_REGISTRY}/${REPO}:${TAG}-amd64 \
-            ${PRIMARY_REGISTRY}/${REPO}:${TAG}-arm64
+          echo "Creating multi-arch manifest: ${BASE_IMAGE}:${TAG}"
+          crane index append \
+            --tag ${BASE_IMAGE}:${TAG} \
+            --manifest ${BASE_IMAGE}:${TAG}-amd64 \
+            --manifest ${BASE_IMAGE}:${TAG}-arm64
+
+          echo "Verifying manifest list:"
+          crane manifest ${BASE_IMAGE}:${TAG} | jq .
 
           # Replicate to media regions
           regions=()
@@ -84,12 +90,15 @@ jobs:
           done < <(echo "$MEDIA_REGIONS" | jq -r '.[]')
 
           for region in "${regions[@]}"; do
-            echo "=== Replicating manifest to region: $region ==="
+            echo "=== Copying manifest to region: $region ==="
             MEDIA_REGISTRY="496668274218.dkr.ecr.${region}.amazonaws.com"
-            aws ecr get-login-password --region ${region} | docker login --username AWS --password-stdin ${MEDIA_REGISTRY}
-            docker buildx imagetools create \
-              --tag ${MEDIA_REGISTRY}/${MEDIA_REPO}:${TAG} \
-              ${MEDIA_REGISTRY}/${MEDIA_REPO}:${TAG}-amd64 \
-              ${MEDIA_REGISTRY}/${MEDIA_REPO}:${TAG}-arm64
+
+            crane auth login ${MEDIA_REGISTRY} \
+              -u AWS -p "$(aws ecr get-login-password --region ${region})"
+
+            crane copy \
+              ${BASE_IMAGE}:${TAG} \
+              ${MEDIA_REGISTRY}/${MEDIA_REPO}:${TAG}
+
             echo "[$region] Successfully replicated manifest"
           done
