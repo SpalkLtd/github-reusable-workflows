@@ -65,15 +65,15 @@ jobs:
           role-to-assume: ${{ inputs.aws-role }}
           aws-region: ${{ inputs.aws-region }}
 
-      - name: Login to dev registry
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
-        env:
-          AWS_REGION: us-east-2
+      - name: Install crane
+        uses: imjasonh/setup-crane@6da1ae018866400525525ce74ff892880c099987 # v0.5
 
-      - name: Login to prod registry
-        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
-        env:
-          AWS_REGION: us-east-1
+      - name: Login to primary ECR registries
+        run: |
+          for region in us-east-2 us-east-1; do
+            crane auth login 496668274218.dkr.ecr.${region}.amazonaws.com \
+              -u AWS -p "$(aws ecr get-login-password --region ${region})"
+          done
 
       - name: Download artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -83,9 +83,6 @@ jobs:
 
       - name: Decompress OCI tarball
         run: zstd -d /tmp/artifact/image.tar.zst -o /tmp/image.tar
-
-      - name: Install crane
-        uses: imjasonh/setup-crane@31b88afe9de28ae0ffa220711af4b60be9435f6e # v0.4
 
       - name: Push image to ECR
         id: push
@@ -105,10 +102,6 @@ jobs:
           echo "Pushed image digest: ${DIGEST}"
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
-      - name: Set up Docker Buildx
-        if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
-
       - name: Push to ECR in media regions
         if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
         env:
@@ -117,11 +110,9 @@ jobs:
           REPOSITORY_NAME: ${{ inputs.repository-name }}
           IMAGE_TAG: ${{ inputs.tag }}
           MEDIA_REGION_REPOSITORY_NAME: ${{ inputs.media-region-repository-name }}
-          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -eo pipefail
 
-          # Parse media regions from JSON input
           regions=()
           while IFS= read -r region; do
             regions+=("$region")
@@ -129,18 +120,17 @@ jobs:
 
           SOURCE_IMAGE="496668274218.dkr.ecr.$AWS_REGION_INPUT.amazonaws.com/$REPOSITORY_NAME:$IMAGE_TAG"
 
-          echo "Source image: $SOURCE_IMAGE"
-          echo "Source image digest: $PUSH_DIGEST"
-
-          # Loop through each region
           for region in "${regions[@]}"; do
             echo "=== Processing region: $region ==="
-            aws ecr get-login-password --region $region | docker login --username AWS --password-stdin 496668274218.dkr.ecr.$region.amazonaws.com
+            MEDIA_REGISTRY="496668274218.dkr.ecr.$region.amazonaws.com"
 
-            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/$MEDIA_REGION_REPOSITORY_NAME:$IMAGE_TAG"
+            crane auth login ${MEDIA_REGISTRY} \
+              -u AWS -p "$(aws ecr get-login-password --region $region)"
 
+            DEST_IMAGE="${MEDIA_REGISTRY}/$MEDIA_REGION_REPOSITORY_NAME:$IMAGE_TAG"
             echo "[$region] Copying image from $SOURCE_IMAGE to $DEST_IMAGE"
-            docker buildx imagetools create --tag $DEST_IMAGE $SOURCE_IMAGE
+
+            crane copy $SOURCE_IMAGE $DEST_IMAGE
 
             echo "[$region] Successfully pushed to region"
           done
