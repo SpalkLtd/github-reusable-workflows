@@ -1,0 +1,146 @@
+# This workflow downloads a pre-built OCI image artifact and pushes it to Amazon ECR.
+# It does NOT check out caller repo code, does NOT have SSH keys, and does NOT execute any Dockerfile.
+# This separation ensures that AWS credentials are never available during code execution.
+#
+# It supports multi-region deployments by replicating the image to media region ECR repositories.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
+name: Push ECR Image
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: "AWS IAM role to assume"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region for deployment"
+        required: true
+        type: string
+      repository-name:
+        description: "The ECR repository name to push to"
+        required: true
+        type: string
+      tag:
+        description: "Tag for the Docker image in ECR"
+        required: true
+        type: string
+      artifact-name:
+        description: "Name of the artifact containing the OCI tarball (from build-ecr-image.yml)"
+        required: true
+        type: string
+      media-region-repository-name:
+        description: "The media region ECR repository name"
+        required: false
+        type: string
+      media-regions:
+        description: 'List of media regions to push to (JSON array format, e.g. ["us-east-1", "eu-west-1"])'
+        required: false
+        type: string
+        default: "[]"
+    outputs:
+      digest:
+        description: "Digest of the pushed image"
+        value: ${{ jobs.push-ecr-image.outputs.digest }}
+
+jobs:
+  push-ecr-image:
+    name: Push ECR Image
+    runs-on: ubuntu-latest
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - name: Validate tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          if [[ "$TAG" =~ ^current(-amd64|-arm64)?$ ]]; then
+            echo "::error::Refusing to push to reserved tag ':${TAG}'. This workflow must not overwrite the ':current' tag."
+            exit 1
+          fi
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Login to dev registry
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+        env:
+          AWS_REGION: us-east-2
+
+      - name: Login to prod registry
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+        env:
+          AWS_REGION: us-east-1
+
+      - name: Download artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: /tmp/artifact
+
+      - name: Decompress OCI tarball
+        run: zstd -d /tmp/artifact/image.tar.zst -o /tmp/image.tar
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@31b88afe9de28ae0ffa220711af4b60be9435f6e # v0.4
+
+      - name: Push image to ECR
+        id: push
+        env:
+          ECR_REGISTRY: "496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          REPOSITORY_NAME: ${{ inputs.repository-name }}
+          IMAGE_TAG: ${{ inputs.tag }}
+        run: |
+          set -eo pipefail
+
+          DEST="${ECR_REGISTRY}/${REPOSITORY_NAME}:${IMAGE_TAG}"
+          echo "Pushing to ${DEST}"
+
+          crane push /tmp/image.tar "${DEST}"
+
+          DIGEST=$(crane digest "${DEST}")
+          echo "Pushed image digest: ${DIGEST}"
+          echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Push to ECR in media regions
+        if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
+        env:
+          MEDIA_REGIONS: ${{ inputs.media-regions }}
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
+          REPOSITORY_NAME: ${{ inputs.repository-name }}
+          IMAGE_TAG: ${{ inputs.tag }}
+          MEDIA_REGION_REPOSITORY_NAME: ${{ inputs.media-region-repository-name }}
+          PUSH_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -eo pipefail
+
+          # Parse media regions from JSON input
+          regions=()
+          while IFS= read -r region; do
+            regions+=("$region")
+          done < <(echo "$MEDIA_REGIONS" | jq -r '.[]')
+
+          SOURCE_IMAGE="496668274218.dkr.ecr.$AWS_REGION_INPUT.amazonaws.com/$REPOSITORY_NAME:$IMAGE_TAG"
+
+          echo "Source image: $SOURCE_IMAGE"
+          echo "Source image digest: $PUSH_DIGEST"
+
+          # Loop through each region
+          for region in "${regions[@]}"; do
+            echo "=== Processing region: $region ==="
+            aws ecr get-login-password --region $region | docker login --username AWS --password-stdin 496668274218.dkr.ecr.$region.amazonaws.com
+
+            DEST_IMAGE="496668274218.dkr.ecr.$region.amazonaws.com/$MEDIA_REGION_REPOSITORY_NAME:$IMAGE_TAG"
+
+            echo "[$region] Copying image from $SOURCE_IMAGE to $DEST_IMAGE"
+            docker buildx imagetools create --tag $DEST_IMAGE $SOURCE_IMAGE
+
+            echo "[$region] Successfully pushed to region"
+          done
