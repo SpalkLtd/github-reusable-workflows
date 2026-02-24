@@ -2,7 +2,7 @@
 # It does NOT have AWS credentials — the image is pushed to ECR by a separate push-ecr-image.yml workflow.
 # This separation ensures that Dockerfile code execution cannot access AWS credentials.
 #
-# The image is exported as an OCI tarball, compressed with zstd, and uploaded as a GHA artifact.
+# The image is exported as a Docker tarball, compressed with zstd, and uploaded as a GHA artifact.
 name: Build ECR Image
 
 on:
@@ -41,7 +41,7 @@ on:
         type: string
         default: "ubuntu-latest"
       compression-level:
-        description: "Zstd compression level for the OCI tarball (1-19, higher = slower but smaller)"
+        description: "Zstd compression level for the image tarball (1-19, higher = slower but smaller)"
         required: false
         type: number
         default: 3
@@ -51,7 +51,7 @@ on:
         required: false
     outputs:
       artifact-name:
-        description: "Name of the uploaded artifact containing the OCI tarball"
+        description: "Name of the uploaded artifact containing the image tarball"
         value: ${{ jobs.build-ecr-image.outputs.artifact-name }}
 
 jobs:
@@ -87,7 +87,7 @@ jobs:
           cp -r ~/.ssh/* docker/ssh
           sed 's|/home/runner|/root|g' -i.bak docker/ssh/config
 
-      - name: Build docker image to OCI tarball
+      - name: Build docker image to tarball
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           ssh: ${{ inputs.use-ssh && secrets.ssh-private-key != '' && format('default={0}', env.SSH_AUTH_SOCK) || '' }}
@@ -99,9 +99,9 @@ jobs:
           cache-from: type=gha,scope=${{ inputs.artifact-name }}
           cache-to: type=gha,mode=max,scope=${{ inputs.artifact-name }}
           file: ${{ inputs.dockerfile }}
-          outputs: type=oci,dest=/tmp/image.tar
+          outputs: type=docker,dest=/tmp/image.tar
 
-      - name: Compress OCI tarball
+      - name: Compress image tarball
         run: zstd -${{ inputs.compression-level }} -T0 /tmp/image.tar -o /tmp/image.tar.zst
 
       - name: Upload artifact
