@@ -1,4 +1,4 @@
-# This workflow downloads a pre-built OCI image artifact and pushes it to Amazon ECR.
+# This workflow downloads a pre-built Docker image artifact and pushes it to Amazon ECR.
 # It does NOT check out caller repo code, does NOT have SSH keys, and does NOT execute any Dockerfile.
 # This separation ensures that AWS credentials are never available during code execution.
 #
@@ -27,7 +27,7 @@ on:
         required: true
         type: string
       artifact-name:
-        description: "Name of the artifact containing the OCI tarball (from build-ecr-image.yml)"
+        description: "Name of the artifact containing the image tarball (from build-ecr-image.yml)"
         required: true
         type: string
       media-region-repository-name:
@@ -71,12 +71,10 @@ jobs:
       - name: Install crane
         uses: imjasonh/setup-crane@6da1ae018866400525525ce74ff892880c099987 # v0.5
 
-      - name: Login to primary ECR registries
+      - name: Login to primary ECR
         run: |
-          for region in us-east-2 us-east-1; do
-            crane auth login 496668274218.dkr.ecr.${region}.amazonaws.com \
-              -u AWS -p "$(aws ecr get-login-password --region ${region})"
-          done
+          crane auth login 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com \
+            -u AWS -p "$(aws ecr get-login-password --region ${{ inputs.aws-region }})"
 
       - name: Download artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -84,7 +82,7 @@ jobs:
           name: ${{ inputs.artifact-name }}
           path: /tmp/artifact
 
-      - name: Decompress OCI tarball
+      - name: Decompress image tarball
         run: zstd -d /tmp/artifact/image.tar.zst -o /tmp/image.tar
 
       - name: Push image to ECR
@@ -135,5 +133,5 @@ jobs:
 
             crane copy $SOURCE_IMAGE $DEST_IMAGE
 
-            echo "[$region] Successfully pushed to region"
+            echo "[$region] Successfully copied image"
           done
