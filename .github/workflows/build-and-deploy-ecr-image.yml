@@ -70,10 +70,13 @@ jobs:
       - name: Validate tag
         run: |
           TAG="${{ inputs.tag }}"
-          if [[ "$TAG" =~ ^current(-amd64|-arm64)?$ ]]; then
-            echo "::error::Refusing to push to reserved tag ':${TAG}'. This workflow must not overwrite the ':current' tag."
-            exit 1
-          fi
+          PROTECTED_TAGS=("current" "latest" "commentator_test_current")
+          for protected in "${PROTECTED_TAGS[@]}"; do
+            if [[ "$TAG" =~ ^${protected}(-amd64|-arm64)?$ ]]; then
+              echo "::error::Refusing to push to reserved tag ':${TAG}'. This workflow must not overwrite the ':${protected}' tag."
+              exit 1
+            fi
+          done
 
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
