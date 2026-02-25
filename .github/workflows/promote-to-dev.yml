@@ -1,0 +1,151 @@
+# This workflow promotes an already-pushed multi-arch image to the :latest tag in dev ECR.
+# It does NOT check out code, does NOT have SSH keys, and does NOT build anything.
+# It uses crane to retag existing images, keeping a clear security boundary from build workflows.
+#
+# The :latest tag is what dev ECS task definitions reference. Pushing a new :latest image is
+# all that's needed -- new tasks pick it up on next creation (DAEMON scheduling).
+#
+# It also sets the :git_head tag to match :latest, so that the nightly cleanup Lambda
+# (which resets :latest to :git_head) becomes a harmless no-op.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
+name: Promote to Dev
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: "AWS IAM role to assume"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region for primary ECR registry (us-east-2 for dev)"
+        required: true
+        type: string
+      repository-name:
+        description: "Primary ECR repository name"
+        required: true
+        type: string
+      source-tag:
+        description: "Existing image tag to promote (e.g. sha-abc123). Must have -amd64 and -arm64 variants."
+        required: true
+        type: string
+      media-region-repository-name:
+        description: "ECR repository name in media regions"
+        required: false
+        type: string
+      media-regions:
+        description: 'List of media regions to replicate to (JSON array format, e.g. ["ap-southeast-1", "eu-central-1"])'
+        required: false
+        type: string
+        default: "[]"
+
+jobs:
+  promote-to-dev:
+    name: Promote to Dev
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate source tag
+        run: |
+          TAG="${{ inputs.source-tag }}"
+          FORBIDDEN_TAGS=("latest" "current" "git_head")
+          for forbidden in "${FORBIDDEN_TAGS[@]}"; do
+            if [[ "$TAG" == "$forbidden" ]]; then
+              echo "::error::Refusing to promote from self-referencing tag ':${TAG}'."
+              exit 1
+            fi
+          done
+          if [[ "$TAG" =~ -(amd64|arm64)$ ]]; then
+            echo "::error::source-tag '${TAG}' looks like a per-architecture tag. Pass the base tag without the -amd64/-arm64 suffix."
+            exit 1
+          fi
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@6da1ae018866400525525ce74ff892880c099987 # v0.5
+
+      - name: Login to primary ECR
+        run: |
+          crane auth login 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com \
+            -u AWS -p "$(aws ecr get-login-password --region ${{ inputs.aws-region }})"
+
+      - name: Retag per-arch images as latest
+        env:
+          ECR_REGISTRY: "496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          REPO: ${{ inputs.repository-name }}
+          SOURCE_TAG: ${{ inputs.source-tag }}
+        run: |
+          set -eo pipefail
+
+          BASE="${ECR_REGISTRY}/${REPO}"
+
+          echo "Tagging ${BASE}:${SOURCE_TAG}-amd64 as latest-amd64"
+          crane tag "${BASE}:${SOURCE_TAG}-amd64" latest-amd64
+
+          echo "Tagging ${BASE}:${SOURCE_TAG}-arm64 as latest-arm64"
+          crane tag "${BASE}:${SOURCE_TAG}-arm64" latest-arm64
+
+      - name: Create latest multi-arch manifest
+        env:
+          ECR_REGISTRY: "496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          REPO: ${{ inputs.repository-name }}
+        run: |
+          set -eo pipefail
+
+          BASE="${ECR_REGISTRY}/${REPO}"
+
+          echo "Creating multi-arch manifest: ${BASE}:latest"
+          crane index append \
+            --tag "${BASE}:latest" \
+            --manifest "${BASE}:latest-amd64" \
+            --manifest "${BASE}:latest-arm64"
+
+          echo "Verifying manifest list:"
+          crane manifest "${BASE}:latest" | jq .
+
+      - name: Set git_head tag for nightly cleanup compatibility
+        env:
+          ECR_REGISTRY: "496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          REPO: ${{ inputs.repository-name }}
+        run: |
+          set -eo pipefail
+
+          BASE="${ECR_REGISTRY}/${REPO}"
+
+          echo "Tagging ${BASE}:latest as git_head"
+          crane tag "${BASE}:latest" git_head
+
+      - name: Replicate to media regions
+        if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
+        env:
+          ECR_REGISTRY: "496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com"
+          REPO: ${{ inputs.repository-name }}
+          MEDIA_REPO: ${{ inputs.media-region-repository-name }}
+          MEDIA_REGIONS: ${{ inputs.media-regions }}
+        run: |
+          set -eo pipefail
+
+          BASE="${ECR_REGISTRY}/${REPO}"
+
+          regions=()
+          while IFS= read -r region; do
+            regions+=("$region")
+          done < <(echo "$MEDIA_REGIONS" | jq -r '.[]')
+
+          for region in "${regions[@]}"; do
+            echo "=== Replicating to region: $region ==="
+            MEDIA_REGISTRY="496668274218.dkr.ecr.${region}.amazonaws.com"
+
+            crane auth login ${MEDIA_REGISTRY} \
+              -u AWS -p "$(aws ecr get-login-password --region ${region})"
+
+            crane copy "${BASE}:latest" "${MEDIA_REGISTRY}/${MEDIA_REPO}:latest"
+            crane copy "${BASE}:git_head" "${MEDIA_REGISTRY}/${MEDIA_REPO}:git_head"
+
+            echo "[$region] Successfully replicated latest and git_head"
+          done

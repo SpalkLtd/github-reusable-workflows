@@ -3,8 +3,10 @@
 #
 # By default, this workflow has NO AWS credentials, ensuring Dockerfile code cannot access them.
 # When the Dockerfile pulls base images from a private ECR repo (e.g. spalk-ffmpeg), set
-# ecr-role and ecr-region to authenticate Docker to ECR before the build. This uses a
-# read-only IAM role that can only pull images — it cannot push, delete, or modify anything.
+# ecr-role and ecr-region to authenticate Docker to ECR before the build. The provided role
+# should be scoped to ECR pull permissions only (see ecr_base_image_pull role in Terraform).
+# Note: when ecr-role is set, the caller workflow must grant `permissions: id-token: write`
+# for OIDC role assumption.
 #
 # The image is exported as a Docker tarball, compressed with zstd, and uploaded as a GHA artifact.
 name: Build ECR Image
@@ -50,7 +52,7 @@ on:
         type: number
         default: 3
       ecr-role:
-        description: "AWS IAM role for ECR base image pull (only needed when Dockerfile uses private ECR base images)"
+        description: "AWS IAM role for ECR base image pull (only needed when Dockerfile uses private ECR base images). Should be scoped to pull-only permissions. Caller must set permissions: id-token: write for OIDC."
         required: false
         type: string
         default: ""
