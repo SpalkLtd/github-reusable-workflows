@@ -55,6 +55,10 @@ jobs:
               exit 1
             fi
           done
+          if [[ "$TAG" =~ -(amd64|arm64)$ ]]; then
+            echo "::error::source-tag '${TAG}' looks like a per-architecture tag. Pass the base tag without the -amd64/-arm64 suffix."
+            exit 1
+          fi
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
