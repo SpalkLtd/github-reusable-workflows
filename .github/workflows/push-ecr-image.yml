@@ -103,7 +103,7 @@ jobs:
           echo "Pushed image digest: ${DIGEST}"
           echo "digest=${DIGEST}" >> "$GITHUB_OUTPUT"
 
-      - name: Copy to media regions
+      - name: Push to ECR in media regions
         if: ${{ inputs.media-region-repository-name != '' && inputs.media-regions != '[]' }}
         env:
           MEDIA_REGIONS: ${{ inputs.media-regions }}
@@ -122,14 +122,16 @@ jobs:
           SOURCE_IMAGE="496668274218.dkr.ecr.$AWS_REGION_INPUT.amazonaws.com/$REPOSITORY_NAME:$IMAGE_TAG"
 
           for region in "${regions[@]}"; do
-            echo "=== Copying image to region: $region ==="
+            echo "=== Processing region: $region ==="
             MEDIA_REGISTRY="496668274218.dkr.ecr.$region.amazonaws.com"
 
             crane auth login ${MEDIA_REGISTRY} \
-              -u AWS -p "$(aws ecr get-login-password --region ${region})"
+              -u AWS -p "$(aws ecr get-login-password --region $region)"
 
-            DEST_IMAGE="${MEDIA_REGISTRY}/${MEDIA_REGION_REPOSITORY_NAME}:${IMAGE_TAG}"
-            crane copy ${SOURCE_IMAGE} ${DEST_IMAGE}
+            DEST_IMAGE="${MEDIA_REGISTRY}/$MEDIA_REGION_REPOSITORY_NAME:$IMAGE_TAG"
+            echo "[$region] Copying image from $SOURCE_IMAGE to $DEST_IMAGE"
+
+            crane copy $SOURCE_IMAGE $DEST_IMAGE
 
             echo "[$region] Successfully copied image"
           done
