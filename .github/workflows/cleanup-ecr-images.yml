@@ -40,10 +40,13 @@ jobs:
       - name: Validate tag prefix
         run: |
           PREFIX="${{ inputs.tag-prefix }}"
-          if [[ "current" == "$PREFIX"* ]]; then
-            echo "::error::Refusing to clean up images matching reserved tag 'current'. Tag prefix '${PREFIX}' would match ':current' tags."
-            exit 1
-          fi
+          PROTECTED_TAGS=("current" "latest" "commentator_test_current")
+          for tag in "${PROTECTED_TAGS[@]}"; do
+            if [[ "$tag" == "$PREFIX"* ]]; then
+              echo "::error::Refusing to clean up images matching reserved tag '${tag}'. Tag prefix '${PREFIX}' would match ':${tag}' tags."
+              exit 1
+            fi
+          done
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
