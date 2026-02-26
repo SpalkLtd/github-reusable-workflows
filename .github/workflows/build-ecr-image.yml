@@ -1,0 +1,142 @@
+# This workflow builds a Docker image using Buildx and outputs it as a GHA artifact.
+# The image is pushed to ECR by a separate push-ecr-image.yml workflow.
+#
+# By default, this workflow has NO AWS credentials, ensuring Dockerfile code cannot access them.
+# When the Dockerfile pulls base images from a private ECR repo (e.g. spalk-ffmpeg), set
+# ecr-role and ecr-region to authenticate Docker to ECR before the build. The provided role
+# should be scoped to ECR pull permissions only (see ecr_base_image_pull role in Terraform).
+# Note: when ecr-role is set, the caller workflow must grant `permissions: id-token: write`
+# for OIDC role assumption.
+#
+# The image is exported as a Docker tarball, compressed with zstd, and uploaded as a GHA artifact.
+name: Build ECR Image
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag for the Docker image (used in artifact naming)."
+        required: true
+        type: string
+      dockerfile:
+        description: "The Dockerfile to build"
+        required: true
+        type: string
+      artifact-name:
+        description: "Name for the uploaded artifact (must be unique within the workflow run)"
+        required: true
+        type: string
+      build-args:
+        description: "Docker build arguments (multiline string, one per line in KEY=VALUE format)"
+        required: false
+        type: string
+        default: ""
+      use-ssh:
+        description: "Whether to use SSH for private repositories"
+        required: false
+        type: boolean
+        default: false
+      platforms:
+        description: "Target platform for the build (e.g., linux/amd64 or linux/arm64)"
+        required: false
+        type: string
+        default: "linux/amd64"
+      runner:
+        description: "The type of runner to use"
+        required: false
+        type: string
+        default: "ubuntu-latest"
+      compression-level:
+        description: "Zstd compression level for the image tarball (1-19, higher = slower but smaller)"
+        required: false
+        type: number
+        default: 3
+      ecr-role:
+        description: "AWS IAM role for ECR base image pull (only needed when Dockerfile uses private ECR base images). Should be scoped to pull-only permissions. Caller must set permissions: id-token: write for OIDC."
+        required: false
+        type: string
+        default: ""
+      ecr-region:
+        description: "AWS region for ECR login (required when ecr-role is set)"
+        required: false
+        type: string
+        default: "us-east-2"
+    secrets:
+      ssh-private-key:
+        description: "SSH keys for accessing private repositories during build."
+        required: false
+    outputs:
+      artifact-name:
+        description: "Name of the uploaded artifact containing the image tarball"
+        value: ${{ jobs.build-ecr-image.outputs.artifact-name }}
+
+jobs:
+  build-ecr-image:
+    name: Build ECR Image
+    runs-on: ${{ inputs.runner }}
+    outputs:
+      artifact-name: ${{ inputs.artifact-name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      # Optional: authenticate to ECR so Docker can pull private base images (e.g. spalk-ffmpeg).
+      # Uses a read-only IAM role scoped to ECR pull permissions only.
+      - name: Configure AWS Credentials for ECR pull
+        if: ${{ inputs.ecr-role != '' }}
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ inputs.ecr-role }}
+          aws-region: ${{ inputs.ecr-region }}
+
+      - name: Login to ECR for base images
+        if: ${{ inputs.ecr-role != '' }}
+        uses: aws-actions/amazon-ecr-login@062b18b96a7aff071d4dc91bc00c4c1a7945b076 # v2.0.1
+
+      # Configure deploy SSH keys to download private repos
+      # Note, you need to add Repo URL to the key comment so this action knows what to do with it
+      # Details: https://github.com/SpalkLtd/ssh-agent#support-for-github-deploy-keys
+      # Automated key rolling script: https://github.com/SpalkLtd/utils/blob/main/actions/deploy_keys.sh
+      - name: Allow access to Spalk Private repositories
+        uses: SpalkLtd/ssh-agent@26e485b72da53538f103f191ddd325d2f2ef3771
+        if: ${{ inputs.use-ssh }}
+        with:
+          ssh-private-key: ${{ secrets.ssh-private-key }}
+
+      # This action copies the ~/.gitconfig and ~/.ssh files from the host, that were configured by the previous SpalkLtd/ssh-agent
+      # step to correctly access github. It corrects the paths. We are not copying actual private keys, they are held in-memory at all
+      # times by the ssh-agent, and crypto functions are done over the env.SSH_AUTH_SOCK socket.
+      - name: Collect Git and SSH config files
+        if: ${{ inputs.use-ssh }}
+        run: |
+          cp -f ~/.gitconfig docker/gitconfig/gitconfig
+          cp -r ~/.ssh/* docker/ssh
+          sed 's|/home/runner|/root|g' -i.bak docker/ssh/config
+
+      - name: Build docker image to tarball
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          ssh: ${{ inputs.use-ssh && secrets.ssh-private-key != '' && format('default={0}', env.SSH_AUTH_SOCK) || '' }}
+          context: .
+          build-args: ${{ inputs.build-args }}
+          push: false
+          tags: image:${{ inputs.tag }}
+          platforms: ${{ inputs.platforms }}
+          cache-from: type=gha,scope=${{ inputs.artifact-name }}
+          cache-to: type=gha,mode=max,scope=${{ inputs.artifact-name }}
+          file: ${{ inputs.dockerfile }}
+          outputs: type=docker,dest=/tmp/image.tar
+
+      - name: Compress image tarball
+        run: zstd -${{ inputs.compression-level }} -T0 /tmp/image.tar -o /tmp/image.tar.zst
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: /tmp/image.tar.zst
+          retention-days: 1
+          if-no-files-found: error

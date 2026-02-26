@@ -1,0 +1,107 @@
+# This workflow creates a multi-architecture Docker manifest from per-architecture
+# images and replicates it to media region ECR repositories.
+# It is designed to be called after separate amd64 and arm64 builds have completed.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
+name: Create Multi-Arch Manifest
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: "AWS IAM role to assume"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region for primary ECR registry"
+        required: true
+        type: string
+      repository-name:
+        description: "Primary ECR repository name"
+        required: true
+        type: string
+      tag:
+        description: "Base image tag (without architecture suffix). Expects {tag}-amd64 and {tag}-arm64 to exist."
+        required: true
+        type: string
+      media-region-repository-name:
+        description: "ECR repository name in media regions. Defaults to repository-name if not specified."
+        required: false
+        type: string
+      media-regions:
+        description: 'List of media regions to replicate to (JSON array format, e.g. ["us-east-1", "eu-west-1"])'
+        required: false
+        type: string
+        default: "[]"
+
+jobs:
+  create-multi-arch-manifest:
+    name: Create Multi-Arch Manifest
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate tag
+        run: |
+          TAG="${{ inputs.tag }}"
+          PROTECTED_TAGS=("current" "latest" "commentator_test_current")
+          for protected in "${PROTECTED_TAGS[@]}"; do
+            if [[ "$TAG" =~ ^${protected}(-amd64|-arm64)?$ ]]; then
+              echo "::error::Refusing to push to reserved tag ':${TAG}'. This workflow must not overwrite the ':${protected}' tag."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Install crane
+        uses: imjasonh/setup-crane@6da1ae018866400525525ce74ff892880c099987 # v0.5
+
+      - name: Login to primary ECR
+        run: |
+          crane auth login 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com \
+            -u AWS -p "$(aws ecr get-login-password --region ${{ inputs.aws-region }})"
+
+      - name: Create and replicate multi-arch manifest
+        env:
+          AWS_REGION_INPUT: ${{ inputs.aws-region }}
+          REPO: ${{ inputs.repository-name }}
+          MEDIA_REPO: ${{ inputs.media-region-repository-name || inputs.repository-name }}
+          TAG: ${{ inputs.tag }}
+          MEDIA_REGIONS: ${{ inputs.media-regions }}
+        run: |
+          set -eo pipefail
+
+          PRIMARY_REGISTRY="496668274218.dkr.ecr.${AWS_REGION_INPUT}.amazonaws.com"
+          BASE_IMAGE="${PRIMARY_REGISTRY}/${REPO}"
+
+          echo "Creating multi-arch manifest: ${BASE_IMAGE}:${TAG}"
+          crane index append \
+            --tag ${BASE_IMAGE}:${TAG} \
+            --manifest ${BASE_IMAGE}:${TAG}-amd64 \
+            --manifest ${BASE_IMAGE}:${TAG}-arm64
+
+          echo "Verifying manifest list:"
+          crane manifest ${BASE_IMAGE}:${TAG} | jq .
+
+          # Replicate to media regions
+          regions=()
+          while IFS= read -r region; do
+            regions+=("$region")
+          done < <(echo "$MEDIA_REGIONS" | jq -r '.[]')
+
+          for region in "${regions[@]}"; do
+            echo "=== Copying manifest to region: $region ==="
+            MEDIA_REGISTRY="496668274218.dkr.ecr.${region}.amazonaws.com"
+
+            crane auth login ${MEDIA_REGISTRY} \
+              -u AWS -p "$(aws ecr get-login-password --region ${region})"
+
+            crane copy \
+              ${BASE_IMAGE}:${TAG} \
+              ${MEDIA_REGISTRY}/${MEDIA_REPO}:${TAG}
+
+            echo "[$region] Successfully replicated manifest"
+          done
