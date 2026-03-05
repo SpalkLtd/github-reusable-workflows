@@ -57,37 +57,76 @@ jobs:
         REPO_COLUMN: "B"
         STATUS_COLUMN: "D"
         WORKSHEET_TITLE: "Dev QA"
-    - name: find_matching_row
+    - name: Find matching row or prepare insert
       if: inputs.pr_number != ''
-      id: find_matching_row
+      id: find_or_insert
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const results = JSON.parse(process.env.RESULTS);
+          const repo = process.env.REPO;
+          const prNumber = process.env.PR_NUMBER;
+          const worksheetTitle = process.env.WORKSHEET_TITLE;
+
+          const rawData = results.results[0].result.rawData;
+          const rowIndex = rawData.findIndex(row => row[0] === repo && row[13] === prNumber);
+
+          if (rowIndex >= 0) {
+            // Row found — build an updateData command
+            const rowNumber = rowIndex + 1;
+            core.info(`Found PR #${prNumber} for ${repo} at row ${rowNumber}`);
+            const commands = JSON.stringify([
+              { command: 'updateData', args: { worksheetTitle, range: `D${rowNumber}`, data: [['REQUIRES TESTING']] } }
+            ]);
+            core.setOutput('commands', commands);
+          } else {
+            // Row not found — fetch PR details and build an appendData command
+            core.warning(`PR #${prNumber} for ${repo} not found in sheet. Inserting new row.`);
+            const [owner, repoName] = process.env.GITHUB_REPOSITORY.split('/');
+            let prTitle = '', prAuthor = '', testInstructions = '';
+            let ticketNumber = '', oldTesterCount = '', newTesterCount = '';
+            let featureFlagName = '', envVars = '', tfChanges = '', dependentRepo = '';
+            try {
+              const { data: pr } = await github.rest.pulls.get({ owner, repo: repoName, pull_number: parseInt(prNumber) });
+              prTitle = pr.title || '';
+              prAuthor = pr.user?.login || '';
+              const body = pr.body || '';
+              const match = (text, regex) => { const m = text.match(regex); return m ? m[1].trim() : ''; };
+              ticketNumber = match(prTitle, /(SA-\d+)/);
+              oldTesterCount = match(body, /Old:\s*(P\d*)/);
+              newTesterCount = match(body, /New:\s*(P\d*)/);
+              testInstructions = match(body, /## Instructions([\s\S]*?)## Number of Testers/);
+              featureFlagName = match(body, /Feature Flag Name:(.*)/);
+              envVars = match(body, /Has New ENV\/Config\.json Vars:(.*)/);
+              tfChanges = match(body, /Has TF Changes:(.*)/);
+              dependentRepo = match(body, /Dependant on Repo:(.*)/);
+            } catch (e) {
+              core.warning(`Could not fetch PR details: ${e.message}`);
+            }
+            const commands = JSON.stringify([
+              { command: 'appendData', args: {
+                data: [[ prTitle, repo, ticketNumber, 'REQUIRES TESTING', '', '',
+                         oldTesterCount, newTesterCount, testInstructions, prAuthor,
+                         featureFlagName, envVars, tfChanges, dependentRepo, prNumber ]],
+                worksheetTitle,
+                minCol: 1
+              }}
+            ]);
+            core.setOutput('commands', commands);
+          }
       env:
-          RESULTS: ${{ steps.read_worksheet.outputs.results }}
-          REPO: ${{ inputs.repo }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-      run: |
-        echo "ticket number = $PR_NUMBER"
-        echo "$RESULTS"
-        ROW_NUMBER=$(echo "$RESULTS" | jq -e --arg repo "$REPO" --arg pr "$PR_NUMBER" '.results[0].result.rawData | map(.[0]==$repo and .[13]==$pr) | index(true) | tostring | tonumber + 1')
-        echo "row = $ROW_NUMBER"
-        echo "ROW_NUMBER=$ROW_NUMBER" >> $GITHUB_OUTPUT
+        RESULTS: ${{ steps.read_worksheet.outputs.results }}
+        REPO: ${{ inputs.repo }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        WORKSHEET_TITLE: ${{ inputs.worksheet_title }}
+
     - id: 'update_worksheet'
-      if: inputs.pr_number != ''
-      uses: SpalkLtd/gsheet.action@v1.2.0 # you can specify '@release' to always have the latest changes
+      if: inputs.pr_number != '' && steps.find_or_insert.outputs.commands != ''
+      uses: SpalkLtd/gsheet.action@v1.2.0
       with:
         spreadsheetId: ${{ secrets.SPREADSHEET_ID }}
-        commands: | # list of commands, specified as a valid JSON string
-          [
-            { "command": "updateData",
-            "args": {
-                "worksheetTitle": "$WORKSHEET_TITLE",
-                "range": "${{ env.STATUS_COLUMN }}${{steps.find_matching_row.outputs.ROW_NUMBER }}",
-                "data":[["REQUIRES TESTING"]]
-              }
-            }
-          ]
+        commands: ${{ steps.find_or_insert.outputs.commands }}
       env:
         GSHEET_CLIENT_EMAIL: ${{ secrets.GSHEET_CLIENT_EMAIL }}
         GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
-        STATUS_COLUMN: "D"
-        WORKSHEET_TITLE: ${{ inputs.worksheet_title }}
 

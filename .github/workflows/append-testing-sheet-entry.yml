@@ -51,80 +51,83 @@ jobs:
 
     # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-    - name: Install pcregrep tool
-      run: |
-        sudo apt-get update
-        sudo apt-get install pcregrep
+    - name: Parse PR and build gsheet commands
+      id: build_commands
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const prTitle = process.env.PR_TITLE;
+          const prDesc = process.env.PR_DESCRIPTION;
+          const repo = process.env.REPO;
+          const prAuthor = process.env.PR_AUTHOR;
+          const prNumber = process.env.PR_NUMBER;
+          const worksheetTitle = process.env.WORKSHEET_TITLE;
 
-    # Finds the ticket number by parsing the the commit string with the regex /(SA-[0-9]*)/ and taking the first match
-    - id: get_data
-      name: get_data
+          const match = (text, regex) => {
+            const m = text.match(regex);
+            return m ? m[1].trim() : '';
+          };
+
+          const ticketNumber = match(prTitle, /(SA-\d+)/);
+          const oldTesterCount = match(prDesc, /Old:\s*(P\d*)/);
+          const newTesterCount = match(prDesc, /New:\s*(P\d*)/);
+          const testInstructions = match(prDesc, /## Instructions([\s\S]*?)## Number of Testers/);
+          const featureFlagName = match(prDesc, /Feature Flag Name:(.*)/);
+          const envVars = match(prDesc, /Has New ENV\/Config\.json Vars:(.*)/);
+          const tfChanges = match(prDesc, /Has TF Changes:(.*)/);
+          const dependentRepo = match(prDesc, /Dependant on Repo:(.*)/);
+
+          core.info(`TICKET_NUMBER=${ticketNumber}`);
+          core.info(`OLD_TESTER_COUNT=${oldTesterCount}`);
+          core.info(`NEW_TESTER_COUNT=${newTesterCount}`);
+          core.info(`TEST_INSTRUCTIONS=${testInstructions}`);
+          core.info(`FEATURE_FLAG_NAME=${featureFlagName}`);
+          core.info(`ENV_VARS=${envVars}`);
+          core.info(`TF_CHANGES=${tfChanges}`);
+          core.info(`DEPENDENT_REPO=${dependentRepo}`);
+
+          // JSON.stringify handles all escaping automatically
+          const commands = JSON.stringify([
+            {
+              command: 'appendData',
+              args: {
+                data: [[
+                  prTitle,
+                  repo,
+                  ticketNumber,
+                  'PR',
+                  '',
+                  '',
+                  oldTesterCount,
+                  newTesterCount,
+                  testInstructions,
+                  prAuthor,
+                  featureFlagName,
+                  envVars,
+                  tfChanges,
+                  dependentRepo,
+                  prNumber
+                ]],
+                worksheetTitle: worksheetTitle,
+                minCol: 1
+              }
+            }
+          ]);
+
+          core.setOutput('commands', commands);
       env:
-        INPUT_PR_DESCRIPTION: ${{ inputs.pr_description }}
-        INPUT_PR_TITLE: ${{ inputs.pr_title }}
-      run: |
-        # Convert line endings
-        PR_DESC="$(echo "$INPUT_PR_DESCRIPTION" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g')"
-
-        #Find data out of PR_DESC
-        TICKET_NUMBER=$(echo "$INPUT_PR_TITLE" | pcregrep --only-matching=1 '(SA-[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        OLD_TESTER_COUNT=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Old: (P[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        NEW_TESTER_COUNT=$(echo "$PR_DESC" | pcregrep --only-matching=1 'New: (P[0-9]*)' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        TEST_INSTRUCTIONS=$(echo "$PR_DESC" | pcregrep --only-matching=1 --multiline  "(?s)## Instructions(.*)## Number of Testers" | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        FEATURE_FLAG_NAME=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Feature Flag Name:(.*?)\\n'  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        ENV_VARS=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Has New ENV\/Config\.json Vars:(.*?)\\n'  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        TF_CHANGES=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Has TF Changes:(.*?)\\n' | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        DEPENDENT_REPO=$(echo "$PR_DESC" | pcregrep --only-matching=1 'Dependant on Repo:(.*?)\\n'  | sed -E ':a;N;$!ba;s/\r{0,1}\n/\\n/g' || echo '')
-        # store the ticket number in an output
-        echo "TICKET_NUMBER=$TICKET_NUMBER" >> $GITHUB_OUTPUT
-        echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT" >> $GITHUB_OUTPUT
-        echo "NEW_TESTER_COUNT=$NEW_TESTER_COUNT" >> $GITHUB_OUTPUT
-        echo "TEST_INSTRUCTIONS=$TEST_INSTRUCTIONS" >> $GITHUB_OUTPUT
-        echo "FEATURE_FLAG_NAME=$FEATURE_FLAG_NAME" >> $GITHUB_OUTPUT
-        echo "ENV_VARS=$ENV_VARS" >> $GITHUB_OUTPUT
-        echo "TF_CHANGES=$TF_CHANGES" >> $GITHUB_OUTPUT
-        echo "DEPENDENT_REPO=$DEPENDENT_REPO" >> $GITHUB_OUTPUT
-
-        ## Debug
-        echo "TICKET_NUMBER=$TICKET_NUMBER"
-        echo "OLD_TESTER_COUNT=$OLD_TESTER_COUNT"
-        echo "NEW_TESTER_COUNT=$NEW_TESTER_COUNT"
-        echo "TEST_INSTRUCTIONS=$TEST_INSTRUCTIONS"
-        echo "FEATURE_FLAG_NAME=$FEATURE_FLAG_NAME"
-        echo "ENV_VARS=$ENV_VARS"
-        echo "TF_CHANGES=$TF_CHANGES"
-        echo "DEPENDENT_REPO=$DEPENDENT_REPO"
+        PR_TITLE: ${{ inputs.pr_title }}
+        PR_DESCRIPTION: ${{ inputs.pr_description }}
+        REPO: ${{ inputs.repo }}
+        PR_AUTHOR: ${{ inputs.pr_author }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        WORKSHEET_TITLE: ${{ inputs.worksheet_title }}
 
     - id: insert_row
       uses: SpalkLtd/gsheet.action@v1.2.0
       with:
         spreadsheetId: "${{ secrets.SPREADSHEET_ID }}"
-        commands: |
-            [
-              { "command": "appendData", "args": {
-                "data": [
-                  [
-                    "${{ inputs.pr_title }}",
-                    "${{ inputs.repo }}",
-                    "${{ steps.get_data.outputs.TICKET_NUMBER }}",
-                    "PR",
-                    "",
-                    "",
-                    "${{ steps.get_data.outputs.OLD_TESTER_COUNT }}",
-                    "${{ steps.get_data.outputs.NEW_TESTER_COUNT }}",
-                    "${{ steps.get_data.outputs.TEST_INSTRUCTIONS }}",
-                    "${{ inputs.pr_author }}",
-                    "${{ steps.get_data.outputs.FEATURE_FLAG_NAME }}",
-                    "${{ steps.get_data.outputs.ENV_VARS }}",
-                    "${{ steps.get_data.outputs.TF_CHANGES }}",
-                    "${{ steps.get_data.outputs.DEPENDENT_REPO }}",
-                    "${{ inputs.pr_number }}"
-                  ]
-                ],
-                "worksheetTitle": "${{ inputs.worksheet_title }}",
-                "minCol": 1
-              } }
-            ]
+        commands: ${{ steps.build_commands.outputs.commands }}
       env:
         GSHEET_CLIENT_EMAIL: ${{ secrets.GSHEET_CLIENT_EMAIL }}
         GSHEET_PRIVATE_KEY: ${{ secrets.GSHEET_PRIVATE_KEY }}
