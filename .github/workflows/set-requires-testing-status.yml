@@ -103,13 +103,19 @@ jobs:
             } catch (e) {
               core.warning(`Could not fetch PR details: ${e.message}`);
             }
+            const prUrl = `https://github.com/${process.env.GITHUB_REPOSITORY}/pull/${prNumber}`;
+            const safeTitle = prTitle.replace(/"/g, '""');
+            const prTitleLink = `=HYPERLINK("${prUrl}","${safeTitle}")`;
+            // Prefix with ' to prevent USER_ENTERED interpreting values as formulas
+            const t = (v) => `'${v}`;
             const commands = JSON.stringify([
               { command: 'appendData', args: {
-                data: [[ prTitle, repo, ticketNumber, 'REQUIRES TESTING', '', '',
-                         oldTesterCount, newTesterCount, testInstructions, prAuthor,
-                         featureFlagName, envVars, tfChanges, dependentRepo, prNumber ]],
+                data: [[ prTitleLink, t(repo), t(ticketNumber), 'REQUIRES TESTING', '', '',
+                         t(oldTesterCount), t(newTesterCount), t(testInstructions), t(prAuthor),
+                         t(featureFlagName), t(envVars), t(tfChanges), t(dependentRepo), t(prNumber) ]],
                 worksheetTitle,
-                minCol: 1
+                minCol: 1,
+                valueInputOption: 'USER_ENTERED'
               }}
             ]);
             core.setOutput('commands', commands);

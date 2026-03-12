@@ -86,30 +86,39 @@ jobs:
           core.info(`TF_CHANGES=${tfChanges}`);
           core.info(`DEPENDENT_REPO=${dependentRepo}`);
 
+          // Build a clickable hyperlink for the PR title
+          const prUrl = `https://github.com/${process.env.GITHUB_REPOSITORY}/pull/${prNumber}`;
+          const safeTitle = prTitle.replace(/"/g, '""');
+          const prTitleLink = `=HYPERLINK("${prUrl}","${safeTitle}")`;
+
+          // Prefix with ' to prevent USER_ENTERED interpreting values as formulas
+          const t = (v) => `'${v}`;
+
           // JSON.stringify handles all escaping automatically
           const commands = JSON.stringify([
             {
               command: 'appendData',
               args: {
                 data: [[
-                  prTitle,
-                  repo,
-                  ticketNumber,
+                  prTitleLink,
+                  t(repo),
+                  t(ticketNumber),
                   'PR',
                   '',
                   '',
-                  oldTesterCount,
-                  newTesterCount,
-                  testInstructions,
-                  prAuthor,
-                  featureFlagName,
-                  envVars,
-                  tfChanges,
-                  dependentRepo,
-                  prNumber
+                  t(oldTesterCount),
+                  t(newTesterCount),
+                  t(testInstructions),
+                  t(prAuthor),
+                  t(featureFlagName),
+                  t(envVars),
+                  t(tfChanges),
+                  t(dependentRepo),
+                  t(prNumber)
                 ]],
                 worksheetTitle: worksheetTitle,
-                minCol: 1
+                minCol: 1,
+                valueInputOption: 'USER_ENTERED'
               }
             }
           ]);
