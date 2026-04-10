@@ -1,0 +1,54 @@
+# This workflow updates a Lambda function's 'current' alias to point to a specific version.
+# It does NOT check out code, does NOT have SSH keys, and does NOT build anything.
+# This is the activation step that makes a deployed Lambda version live.
+#
+# In the IAM trust policy, this workflow is only trusted in dev — prod activation is
+# performed manually via switch-versions.sh by an operator with direct AWS access.
+# This ensures that code write access alone cannot activate production artefacts.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
+name: Activate Lambda
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: "AWS IAM role to assume via OIDC"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region for the Lambda function"
+        required: true
+        type: string
+      function-name:
+        description: "Lambda function name (e.g. dev_vod_processing_http_handler)"
+        required: true
+        type: string
+      target-version:
+        description: "The numeric Lambda version to activate (from deploy-lambda.yml output)"
+        required: true
+        type: string
+
+jobs:
+  activate-lambda:
+    name: Activate Lambda
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Update current alias
+        env:
+          FUNCTION_NAME: ${{ inputs.function-name }}
+          TARGET_VERSION: ${{ inputs.target-version }}
+        run: |
+          echo "Updating 'current' alias to version ${TARGET_VERSION}"
+          aws lambda update-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name current \
+            --function-version "$TARGET_VERSION" \
+            --region ${{ inputs.aws-region }} > /dev/null
+          echo "Activated version ${TARGET_VERSION} as 'current'"
