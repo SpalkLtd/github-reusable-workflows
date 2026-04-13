@@ -37,6 +37,11 @@ on:
         required: false
         type: string
         default: "ubuntu-latest"
+      use-ssh:
+        description: "Whether to use SSH for private repositories"
+        required: false
+        type: boolean
+        default: false
     secrets:
       ssh-private-key:
         description: "SSH keys for accessing private Go module repositories."
@@ -69,7 +74,7 @@ jobs:
       # Configure deploy SSH keys to download private repos.
       # Details: https://github.com/SpalkLtd/ssh-agent#support-for-github-deploy-keys
       - name: Allow access to Spalk private repositories
-        if: ${{ secrets.ssh-private-key != '' }}
+        if: ${{ inputs.use-ssh }}
         uses: SpalkLtd/ssh-agent@26e485b72da53538f103f191ddd325d2f2ef3771
         with:
           ssh-private-key: ${{ secrets.ssh-private-key }}
