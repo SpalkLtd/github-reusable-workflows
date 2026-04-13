@@ -1,0 +1,145 @@
+# This workflow downloads a pre-built Lambda binary artifact and deploys it to AWS Lambda.
+# It does NOT check out caller repo code, does NOT have SSH keys, and does NOT execute
+# any user code. This separation ensures that AWS credentials are never available during
+# code execution.
+#
+# The workflow uploads the binary + config to S3, updates the Lambda function code,
+# publishes a new version, and creates a version-specific alias. It does NOT update
+# the 'current' alias — that is handled by activate-lambda.yml (dev) or manually (prod).
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
+name: Deploy Lambda
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: "AWS IAM role to assume via OIDC"
+        required: true
+        type: string
+      aws-region:
+        description: "AWS region for deployment"
+        required: true
+        type: string
+      artifact-name:
+        description: "Name of the artifact containing the Lambda binary (from build-lambda.yml)"
+        required: true
+        type: string
+      binary-name:
+        description: "Name of the binary file inside the artifact"
+        required: false
+        type: string
+        default: "main"
+      function-name:
+        description: "Lambda function name (e.g. dev_vod_processing_http_handler)"
+        required: true
+        type: string
+      config-s3-path:
+        description: "S3 URI for the config.json file (e.g. s3://spalk-configs/dev/us-east-2/vod-processing-service/lambda/config.json)"
+        required: true
+        type: string
+      lambda-binaries-bucket:
+        description: "S3 bucket for Lambda deployment ZIPs (e.g. dev-spalk-vod-processing-lambda-binaries)"
+        required: true
+        type: string
+      alias-name:
+        description: "Version-specific alias to create (e.g. sha-abc123 or v1-2-3). Must NOT be 'current'."
+        required: true
+        type: string
+    outputs:
+      version:
+        description: "The published Lambda version number"
+        value: ${{ jobs.deploy-lambda.outputs.version }}
+
+jobs:
+  deploy-lambda:
+    name: Deploy Lambda
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.publish.outputs.version }}
+    steps:
+      - name: Sanitize and validate alias name
+        id: alias
+        run: |
+          # Lambda alias names must match [a-zA-Z0-9-_]. Replace dots with hyphens
+          # (e.g. v1.2.3 → v1-2-3) to support release tags as alias names.
+          ALIAS=$(echo "${{ inputs.alias-name }}" | sed 's/\./-/g')
+          if [[ "$ALIAS" == "current" ]]; then
+            echo "::error::Refusing to create alias 'current'. Use activate-lambda.yml to update the live alias."
+            exit 1
+          fi
+          echo "name=${ALIAS}" >> "$GITHUB_OUTPUT"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.1.0
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Download binary artifact
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v8.0.1
+        with:
+          name: ${{ inputs.artifact-name }}
+          path: /tmp/lambda-build
+
+      - name: Download config from S3
+        run: |
+          aws s3 cp "${{ inputs.config-s3-path }}" /tmp/lambda-build/config.json
+
+      - name: Create deployment ZIP
+        run: |
+          cd /tmp/lambda-build
+          chmod +x ${{ inputs.binary-name }}
+          zip -j /tmp/lambda-deploy.zip ${{ inputs.binary-name }} config.json
+
+      - name: Upload ZIP to S3
+        env:
+          BUCKET: ${{ inputs.lambda-binaries-bucket }}
+          ALIAS: ${{ steps.alias.outputs.name }}
+        run: |
+          aws s3 cp /tmp/lambda-deploy.zip "s3://${BUCKET}/lambda_${ALIAS}.zip"
+
+      - name: Update Lambda function code
+        env:
+          FUNCTION_NAME: ${{ inputs.function-name }}
+          BUCKET: ${{ inputs.lambda-binaries-bucket }}
+          ALIAS: ${{ steps.alias.outputs.name }}
+        run: |
+          aws lambda update-function-code \
+            --function-name "$FUNCTION_NAME" \
+            --s3-bucket "$BUCKET" \
+            --s3-key "lambda_${ALIAS}.zip" \
+            --region ${{ inputs.aws-region }} > /dev/null
+
+      - name: Wait for function code update
+        env:
+          FUNCTION_NAME: ${{ inputs.function-name }}
+        run: |
+          aws lambda wait function-updated \
+            --function-name "$FUNCTION_NAME" \
+            --region ${{ inputs.aws-region }}
+
+      - name: Publish new version
+        id: publish
+        env:
+          FUNCTION_NAME: ${{ inputs.function-name }}
+        run: |
+          VERSION=$(aws lambda publish-version \
+            --function-name "$FUNCTION_NAME" \
+            --region ${{ inputs.aws-region }} \
+            --output json | jq -r '.Version')
+          echo "Published Lambda version: ${VERSION}"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create version-specific alias
+        env:
+          FUNCTION_NAME: ${{ inputs.function-name }}
+          ALIAS: ${{ steps.alias.outputs.name }}
+          VERSION: ${{ steps.publish.outputs.version }}
+        run: |
+          echo "Creating alias '${ALIAS}' pointing to version ${VERSION}"
+          aws lambda create-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name "$ALIAS" \
+            --function-version "$VERSION" \
+            --region ${{ inputs.aws-region }} > /dev/null
