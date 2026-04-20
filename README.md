@@ -16,13 +16,22 @@ Reusable GitHub Workflows for the Spalk Organisation.
 
 ### Lambda workflows (Go Lambda functions)
 
-| Workflow              | Purpose                                                | AWS Credentials    | Code Checkout |
-| --------------------- | ------------------------------------------------------ | ------------------ | ------------- |
-| `build-lambda.yml`    | Build Go binary, upload as artifact                    | None               | Yes           |
-| `deploy-lambda.yml`   | Deploy binary to Lambda, publish version, create alias | S3 + Lambda deploy | No            |
-| `activate-lambda.yml` | Update `current` alias (dev only)                      | Lambda UpdateAlias | No            |
+| Workflow              | Purpose                                                | AWS Credentials         | Code Checkout |
+| --------------------- | ------------------------------------------------------ | ----------------------- | ------------- |
+| `build-lambda.yml`    | Build Go binary, upload as artifact                    | None                    | Yes           |
+| `deploy-lambda.yml`   | Deploy binary to Lambda, publish version, create alias | S3 + Lambda deploy      | No            |
+| `activate-lambda.yml` | Update `current` alias (dev only)                      | Lambda UpdateAlias      | No            |
+| `cleanup-lambda.yml`  | Delete PR aliases, their versions, and optional ZIPs   | Lambda delete + S3 (opt.)| No            |
 
 The Lambda workflows enforce **artefact/activation separation**: `deploy-lambda.yml` can create new Lambda versions but cannot make them live. Only `activate-lambda.yml` can update the `current` alias, and its IAM trust policy is restricted to dev. Production activation is manual. See the [CI/CD Auth & Security docs](../../docs/infra/ci-cd-auth-security.md) for details.
+
+`cleanup-lambda.yml` is the Lambda equivalent of `cleanup-ecr-images.yml`: it tears down per-PR Lambda aliases created by `deploy-lambda.yml`. It refuses to operate on the protected `current` alias (or prefixes like `v`/`release` that could match release aliases). Inputs:
+
+- `aws-role` (required) — IAM role to assume via OIDC.
+- `aws-region` (required) — AWS region for the Lambda functions.
+- `function-names` (required) — JSON array of Lambda function names (e.g. `["fn-a", "fn-b"]`).
+- `alias-prefix` (required) — prefix for aliases to delete (e.g. `pr-42-`). Must not match `current`.
+- `lambda-binaries-bucket` (optional) — when set, also deletes `lambda_${alias-prefix}*.zip` objects from this bucket. When unset, no S3 cleanup is performed.
 
 ### Other workflows
 

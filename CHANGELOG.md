@@ -14,3 +14,4 @@
 - Replace deprecated `::set-output` with `$GITHUB_OUTPUT` and upgrade all third-party actions to latest versions (SHA-pinned)
 - Move `${{ }}` expressions out of `run:` blocks into `env:` to prevent shell injection
 - Fix testing sheet workflows to use `actions/github-script` for JSON-safe command building and auto-insert missing rows on merge
+- Add `cleanup-lambda.yml` reusable workflow for PR-scoped Lambda alias/version/ZIP cleanup.
