@@ -1,0 +1,168 @@
+# This workflow cleans up PR-scoped Lambda aliases, their associated published
+# versions, and (optionally) the deployment ZIPs uploaded by `deploy-lambda.yml`.
+#
+# It is intended to run on PR close to tear down per-PR preview deployments
+# created by `deploy-lambda.yml`. It refuses to operate on the protected
+# `current` alias (used for live traffic) or on prefixes that could match
+# release aliases.
+#
+# It will require setting up correct IAM authorization, which is detailed in README.md.
+name: Clean up PR Lambda aliases
+
+on:
+  workflow_call:
+    inputs:
+      aws-role:
+        description: 'AWS IAM role to assume'
+        required: true
+        type: string
+      aws-region:
+        description: 'AWS region for the Lambda functions'
+        required: true
+        type: string
+      function-names:
+        description: 'JSON array of Lambda function names (e.g. ["fn-a", "fn-b"])'
+        required: true
+        type: string
+      alias-prefix:
+        description: 'Prefix for aliases to clean up (e.g. "pr-42-"). Must not match "current".'
+        required: true
+        type: string
+      lambda-binaries-bucket:
+        description: 'Optional S3 bucket for deployment ZIPs. When set, deletes lambda_${alias-prefix}*.zip objects. When unset, skips S3 cleanup.'
+        required: false
+        type: string
+        default: ''
+
+jobs:
+  cleanup_lambda:
+    name: Clean up PR Lambda aliases
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate alias prefix
+        env:
+          PREFIX: ${{ inputs.alias-prefix }}
+        run: |
+          # Guard against empty / trivially unsafe prefixes that would match
+          # too much (including release aliases and the protected `current`).
+          if [[ -z "$PREFIX" || "$PREFIX" == "-" ]]; then
+            echo "::error::alias-prefix must be a non-empty, specific string (e.g. 'pr-42-'). Got: '${PREFIX}'"
+            exit 1
+          fi
+
+          # Refuse prefixes that would match a reserved / release-style alias.
+          PROTECTED_ALIASES=("current" "v" "release")
+          for alias in "${PROTECTED_ALIASES[@]}"; do
+            if [[ "$alias" == "$PREFIX"* ]]; then
+              echo "::error::Refusing to clean up aliases matching reserved alias '${alias}'. alias-prefix '${PREFIX}' would match '${alias}' aliases."
+              exit 1
+            fi
+          done
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: ${{ inputs.aws-role }}
+          aws-region: ${{ inputs.aws-region }}
+
+      - name: Delete PR aliases and their versions
+        env:
+          FUNCTION_NAMES: ${{ inputs.function-names }}
+          PREFIX: ${{ inputs.alias-prefix }}
+          REGION: ${{ inputs.aws-region }}
+        run: |
+          set -euo pipefail
+
+          echo "Starting Lambda alias cleanup with prefix '${PREFIX}'."
+
+          while IFS= read -r FN; do
+            [[ -z "$FN" ]] && continue
+            echo "Processing function: $FN"
+
+            # Paginate list-aliases using NextMarker. aws-cli will return
+            # NextMarker when results are truncated.
+            NEXT_MARKER=""
+            while : ; do
+              if [[ -z "$NEXT_MARKER" ]]; then
+                PAGE=$(aws lambda list-aliases \
+                  --function-name "$FN" \
+                  --region "$REGION" \
+                  --output json)
+              else
+                PAGE=$(aws lambda list-aliases \
+                  --function-name "$FN" \
+                  --region "$REGION" \
+                  --marker "$NEXT_MARKER" \
+                  --output json)
+              fi
+
+              # Extract matching aliases as TSV lines: "<name>\t<version>"
+              MATCHES=$(echo "$PAGE" | jq -r \
+                --arg prefix "$PREFIX" \
+                '.Aliases[] | select(.Name | startswith($prefix)) | "\(.Name)\t\(.FunctionVersion)"')
+
+              if [[ -n "$MATCHES" ]]; then
+                while IFS=$'\t' read -r ALIAS VERSION; do
+                  [[ -z "$ALIAS" ]] && continue
+                  if [[ "$ALIAS" == "current" ]]; then
+                    # Defence-in-depth: prefix guard should already prevent this.
+                    echo "::error::Refusing to delete protected alias 'current' on function '${FN}'."
+                    exit 1
+                  fi
+
+                  echo "Deleting alias '${ALIAS}' (version ${VERSION}) on ${FN}"
+                  aws lambda delete-alias \
+                    --function-name "$FN" \
+                    --name "$ALIAS" \
+                    --region "$REGION"
+
+                  # delete-function with --qualifier deletes only that numbered
+                  # version, not the function itself. '$LATEST' cannot be deleted.
+                  if [[ -n "$VERSION" && "$VERSION" != "\$LATEST" ]]; then
+                    echo "Deleting version ${VERSION} on ${FN}"
+                    aws lambda delete-function \
+                      --function-name "$FN" \
+                      --qualifier "$VERSION" \
+                      --region "$REGION"
+                  fi
+                done <<< "$MATCHES"
+              fi
+
+              NEXT_MARKER=$(echo "$PAGE" | jq -r '.NextMarker // ""')
+              if [[ -z "$NEXT_MARKER" || "$NEXT_MARKER" == "null" ]]; then
+                break
+              fi
+            done
+          done < <(echo "$FUNCTION_NAMES" | jq -r '.[]')
+
+          echo "Lambda alias cleanup complete."
+
+      - name: Delete PR deployment ZIPs from S3
+        if: inputs.lambda-binaries-bucket != ''
+        env:
+          BUCKET: ${{ inputs.lambda-binaries-bucket }}
+          PREFIX: ${{ inputs.alias-prefix }}
+        run: |
+          set -euo pipefail
+
+          S3_PREFIX="lambda_${PREFIX}"
+          echo "Listing S3 objects in bucket '${BUCKET}' with prefix '${S3_PREFIX}'."
+
+          # Collect all matching .zip keys across pages.
+          KEYS=$(aws s3api list-objects-v2 \
+            --bucket "$BUCKET" \
+            --prefix "$S3_PREFIX" \
+            --query 'Contents[?ends_with(Key, `.zip`)].Key' \
+            --output text)
+
+          if [[ -z "$KEYS" || "$KEYS" == "None" ]]; then
+            echo "No matching ZIP objects found; skipping S3 cleanup."
+            exit 0
+          fi
+
+          for KEY in $KEYS; do
+            echo "Deleting s3://${BUCKET}/${KEY}"
+            aws s3 rm "s3://${BUCKET}/${KEY}"
+          done
+
+          echo "S3 ZIP cleanup complete."
