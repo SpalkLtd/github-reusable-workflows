@@ -79,8 +79,16 @@ jobs:
             [[ -z "$FN" ]] && continue
             echo "Processing function: $FN"
 
-            # Paginate list-aliases using NextMarker. aws-cli will return
-            # NextMarker when results are truncated.
+            # Versions referenced by matching aliases, collected in pass 1 and
+            # deleted in pass 2. A moving alias (e.g. pr-42-head) and a
+            # version-specific alias (pr-42-<sha>) can point at the SAME version,
+            # and Lambda refuses to delete a version while any alias still
+            # references it. So delete ALL matching aliases first, then delete
+            # the now-dereferenced versions once each.
+            VERSIONS=""
+
+            # Pass 1: delete matching aliases. Paginate list-aliases using
+            # NextMarker; aws-cli returns NextMarker when results are truncated.
             NEXT_MARKER=""
             while : ; do
               if [[ -z "$NEXT_MARKER" ]]; then
@@ -116,14 +124,8 @@ jobs:
                     --name "$ALIAS" \
                     --region "$REGION"
 
-                  # delete-function with --qualifier deletes only that numbered
-                  # version, not the function itself. '$LATEST' cannot be deleted.
                   if [[ -n "$VERSION" && "$VERSION" != "\$LATEST" ]]; then
-                    echo "Deleting version ${VERSION} on ${FN}"
-                    aws lambda delete-function \
-                      --function-name "$FN" \
-                      --qualifier "$VERSION" \
-                      --region "$REGION"
+                    VERSIONS="${VERSIONS}${VERSION}"$'\n'
                   fi
                 done <<< "$MATCHES"
               fi
@@ -133,6 +135,29 @@ jobs:
                 break
               fi
             done
+
+            # Pass 2: delete each distinct version once. delete-function with
+            # --qualifier deletes only that numbered version, not the function.
+            # Process substitution (not a pipe) keeps this loop in the current
+            # shell so a genuine failure still aborts the job.
+            while IFS= read -r VERSION; do
+              [[ -z "$VERSION" ]] && continue
+              echo "Deleting version ${VERSION} on ${FN}"
+              if ! aws lambda delete-function \
+                --function-name "$FN" \
+                --qualifier "$VERSION" \
+                --region "$REGION" 2>/tmp/cleanup_del_err; then
+                if grep -q "ResourceNotFoundException" /tmp/cleanup_del_err; then
+                  echo "Version ${VERSION} already deleted; skipping."
+                elif grep -q "ResourceConflictException" /tmp/cleanup_del_err; then
+                  # Still referenced by a non-matching alias we must not touch.
+                  echo "::warning::Version ${VERSION} on ${FN} still has an alias; leaving in place."
+                else
+                  cat /tmp/cleanup_del_err >&2
+                  exit 1
+                fi
+              fi
+            done < <(echo "$VERSIONS" | sort -u)
           done < <(echo "$FUNCTION_NAMES" | jq -r '.[]')
 
           echo "Lambda alias cleanup complete."

@@ -4,8 +4,10 @@
 # code execution.
 #
 # The workflow uploads the binary + config to S3, updates the Lambda function code,
-# publishes a new version, and creates a version-specific alias. It does NOT update
-# the 'current' alias — that is handled by activate-lambda.yml (dev) or manually (prod).
+# publishes a new version, and creates a version-specific alias. It can also
+# create-or-update an optional moving alias (e.g. pr-42-head) pointing at that
+# version. It does NOT update the 'current' alias — that is handled by
+# activate-lambda.yml (dev) or manually (prod).
 #
 # It will require setting up correct IAM authorization, which is detailed in README.md.
 name: Deploy Lambda
@@ -46,6 +48,11 @@ on:
         description: "Version-specific alias to create (e.g. sha-abc123 or v1-2-3). Must NOT be 'current'."
         required: true
         type: string
+      moving-alias-name:
+        description: "Optional moving alias to create-or-update to point at the just-published version (e.g. pr-42-head). Unlike alias-name it may already exist and is re-pointed. Must NOT be 'current'."
+        required: false
+        type: string
+        default: ""
     outputs:
       version:
         description: "The published Lambda version number"
@@ -69,6 +76,14 @@ jobs:
             exit 1
           fi
           echo "name=${ALIAS}" >> "$GITHUB_OUTPUT"
+
+          # Optional moving alias (e.g. pr-42-head): create-or-updated below.
+          MOVING=$(echo "${{ inputs.moving-alias-name }}" | sed 's/\./-/g')
+          if [[ "$MOVING" == "current" ]]; then
+            echo "::error::Refusing to use moving alias 'current'. Use activate-lambda.yml to update the live alias."
+            exit 1
+          fi
+          echo "moving_name=${MOVING}" >> "$GITHUB_OUTPUT"
 
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.1.0
@@ -141,5 +156,28 @@ jobs:
           aws lambda create-alias \
             --function-name "$FUNCTION_NAME" \
             --name "$ALIAS" \
+            --function-version "$VERSION" \
+            --region ${{ inputs.aws-region }} > /dev/null
+
+      # A moving alias (e.g. pr-42-head) is re-pointed on every deploy, so it may
+      # already exist. update-alias fails on the first deploy (alias absent), so
+      # fall back to create-alias. Kept inside this credentialed, pinned workflow
+      # so the IAM trust policy can be scoped to this workflow ref.
+      - name: Create or update moving alias
+        if: inputs.moving-alias-name != ''
+        env:
+          FUNCTION_NAME: ${{ inputs.function-name }}
+          MOVING: ${{ steps.alias.outputs.moving_name }}
+          VERSION: ${{ steps.publish.outputs.version }}
+        run: |
+          echo "Pointing moving alias '${MOVING}' at version ${VERSION}"
+          aws lambda update-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name "$MOVING" \
+            --function-version "$VERSION" \
+            --region ${{ inputs.aws-region }} > /dev/null 2>&1 \
+          || aws lambda create-alias \
+            --function-name "$FUNCTION_NAME" \
+            --name "$MOVING" \
             --function-version "$VERSION" \
             --region ${{ inputs.aws-region }} > /dev/null
