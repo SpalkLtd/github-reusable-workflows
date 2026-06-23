@@ -143,20 +143,27 @@ jobs:
             while IFS= read -r VERSION; do
               [[ -z "$VERSION" ]] && continue
               echo "Deleting version ${VERSION} on ${FN}"
+              # Per-iteration stderr capture so the error classification below
+              # only ever sees output from the current invocation (a reused
+              # file could otherwise leak stale stderr into the grep checks).
+              DEL_ERR=$(mktemp)
               if ! aws lambda delete-function \
                 --function-name "$FN" \
                 --qualifier "$VERSION" \
-                --region "$REGION" 2>/tmp/cleanup_del_err; then
-                if grep -q "ResourceNotFoundException" /tmp/cleanup_del_err; then
+                --region "$REGION" 2>"$DEL_ERR"; then
+                if grep -q "ResourceNotFoundException" "$DEL_ERR"; then
                   echo "Version ${VERSION} already deleted; skipping."
-                elif grep -q "ResourceConflictException" /tmp/cleanup_del_err; then
-                  # Still referenced by a non-matching alias we must not touch.
-                  echo "::warning::Version ${VERSION} on ${FN} still has an alias; leaving in place."
+                elif grep -q "ResourceConflictException" "$DEL_ERR"; then
+                  # Still in use (e.g. by an alias or event-source mapping);
+                  # leaving it in place.
+                  echo "::warning::Version ${VERSION} on ${FN} is still in use (e.g. by an alias or event-source mapping); leaving it in place."
                 else
-                  cat /tmp/cleanup_del_err >&2
+                  cat "$DEL_ERR" >&2
+                  rm -f "$DEL_ERR"
                   exit 1
                 fi
               fi
+              rm -f "$DEL_ERR"
             done < <(echo "$VERSIONS" | sort -u)
           done < <(echo "$FUNCTION_NAMES" | jq -r '.[]')
 
