@@ -15,3 +15,5 @@
 - Move `${{ }}` expressions out of `run:` blocks into `env:` to prevent shell injection
 - Fix testing sheet workflows to use `actions/github-script` for JSON-safe command building and auto-insert missing rows on merge
 - Add `cleanup-lambda.yml` reusable workflow for PR-scoped Lambda alias/version/ZIP cleanup.
+- Add optional `moving-alias-name` input to `deploy-lambda.yml` to create-or-update a re-pointable alias (e.g. `pr-42-head`) pointing at the just-published version.
+- Update `cleanup-lambda.yml` to delete aliases before versions and tolerate versions shared by multiple aliases.

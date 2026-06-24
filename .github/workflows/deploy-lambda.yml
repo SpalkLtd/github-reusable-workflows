@@ -49,7 +49,7 @@ on:
         required: true
         type: string
       moving-alias-name:
-        description: "Optional moving alias to create-or-update to point at the just-published version (e.g. pr-42-head). Unlike alias-name it may already exist and is re-pointed. Must NOT be 'current'."
+        description: "Optional moving alias to create-or-update to point at the just-published version (e.g. pr-42-head). Unlike alias-name it may already exist and is re-pointed. NOTE: this re-points whatever alias name is passed, so scope it carefully (e.g. per-PR) to limit blast radius. Must NOT be 'current'."
         required: false
         type: string
         default: ""
@@ -67,6 +67,8 @@ jobs:
     steps:
       - name: Sanitize and validate alias name
         id: alias
+        env:
+          MOVING_ALIAS_NAME: ${{ inputs.moving-alias-name }}
         run: |
           # Lambda alias names must match [a-zA-Z0-9-_]. Replace dots with hyphens
           # (e.g. v1.2.3 → v1-2-3) to support release tags as alias names.
@@ -78,7 +80,7 @@ jobs:
           echo "name=${ALIAS}" >> "$GITHUB_OUTPUT"
 
           # Optional moving alias (e.g. pr-42-head): create-or-updated below.
-          MOVING=$(echo "${{ inputs.moving-alias-name }}" | sed 's/\./-/g')
+          MOVING=$(echo "$MOVING_ALIAS_NAME" | sed 's/\./-/g')
           if [[ "$MOVING" == "current" ]]; then
             echo "::error::Refusing to use moving alias 'current'. Use activate-lambda.yml to update the live alias."
             exit 1
@@ -171,13 +173,27 @@ jobs:
           VERSION: ${{ steps.publish.outputs.version }}
         run: |
           echo "Pointing moving alias '${MOVING}' at version ${VERSION}"
-          aws lambda update-alias \
+          # Capture update-alias stderr so a real failure (throttle, permissions)
+          # is not silently swallowed: only fall back to create-alias when the
+          # alias genuinely does not exist yet. Mirrors cleanup pass-2's
+          # ResourceNotFoundException handling.
+          UPD_ERR=$(mktemp)
+          if ! aws lambda update-alias \
             --function-name "$FUNCTION_NAME" \
             --name "$MOVING" \
             --function-version "$VERSION" \
-            --region ${{ inputs.aws-region }} > /dev/null 2>&1 \
-          || aws lambda create-alias \
-            --function-name "$FUNCTION_NAME" \
-            --name "$MOVING" \
-            --function-version "$VERSION" \
-            --region ${{ inputs.aws-region }} > /dev/null
+            --region ${{ inputs.aws-region }} > /dev/null 2>"$UPD_ERR"; then
+            if grep -q "ResourceNotFoundException" "$UPD_ERR"; then
+              echo "Moving alias '${MOVING}' does not exist yet; creating it."
+              aws lambda create-alias \
+                --function-name "$FUNCTION_NAME" \
+                --name "$MOVING" \
+                --function-version "$VERSION" \
+                --region ${{ inputs.aws-region }} > /dev/null
+            else
+              cat "$UPD_ERR" >&2
+              rm -f "$UPD_ERR"
+              exit 1
+            fi
+          fi
+          rm -f "$UPD_ERR"
