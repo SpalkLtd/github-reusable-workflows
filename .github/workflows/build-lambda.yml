@@ -15,9 +15,14 @@ on:
         type: string
         default: "1.18"
       build-dir:
-        description: "Path to the Go package containing main (e.g. ./exec/http/lambda)"
+        description: "Path to the Go package containing main, relative to working-directory (e.g. ./exec/http/lambda)"
         required: true
         type: string
+      working-directory:
+        description: "Directory containing the service Go module (its go.mod/go.sum), relative to the repository root (e.g. apps/api/spalk-live-sync-api for a monorepo caller). go mod download and go build run here, and build-dir resolves relative to it. Default '.' preserves the standalone-repo behaviour."
+        required: false
+        type: string
+        default: "."
       binary-name:
         description: "Output binary name (use 'bootstrap' for provided.al2023 runtime, 'main' for go1.x)"
         required: false
@@ -68,6 +73,9 @@ jobs:
         with:
           go-version: ${{ inputs.go-version }}
           cache: true
+          # Key the module cache on the service go.sum (with the default '.' this is
+          # ./go.sum — unchanged for standalone callers).
+          cache-dependency-path: ${{ inputs.working-directory }}/go.sum
 
       - run: go env -w GOPRIVATE="github.com/SpalkLtd/*"
 
@@ -80,9 +88,11 @@ jobs:
           ssh-private-key: ${{ secrets.ssh-private-key }}
 
       - name: Download Go modules
+        working-directory: ${{ inputs.working-directory }}
         run: go mod download
 
       - name: Build Lambda binary
+        working-directory: ${{ inputs.working-directory }}
         env:
           GOOS: linux
           GOARCH: ${{ inputs.goarch }}
