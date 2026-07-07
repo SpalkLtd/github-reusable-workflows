@@ -139,8 +139,8 @@ jobs:
           sed 's|/home/runner|/root|g' -i.bak "$BUILD_CONTEXT/docker/ssh/config"
 
       # Stage vendor/ into the build context (locked in this reusable, not caller-supplied).
-      # Repo tree is data-only: GOPRIVATE unset + GOPROXY no-`direct` (no key fetch),
-      # go.work members must be in-tree, network replaces rejected. Linux runners only.
+      # Repo tree is data-only: GOVCS='*:off' blocks git so no dep can be cloned over the
+      # deploy keys; go.work members must be in-tree; network replaces rejected.
       - name: Set up Go for workspace vendor
         if: ${{ inputs.workspace-vendor && inputs.go-version != '' }}
         uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v6.4.0
@@ -153,10 +153,14 @@ jobs:
         env:
           CONTEXT: ${{ inputs.context }}
           GO_VERSION: ${{ inputs.go-version }}
-          # Public proxy only, no `direct` fallback, GOPRIVATE deliberately unset: a
-          # non-local (private) dep named by the untrusted tree cannot be git-cloned
-          # over the deploy keys — it fails on the proxy. Third-party public modules
-          # still resolve for vendoring; every first-party dep must be a go.work member.
+          # SECURITY backstop: GOVCS='*:off' stops go from invoking git/VCS for ANY
+          # module, so an attacker-named non-local dep cannot be cloned over the deploy
+          # keys. (A GOPROXY 404 — even with GOPROXY=off — otherwise falls back to
+          # `git ls-remote`, which the runner's insteadOf turns into an SSH clone.)
+          # GOPRIVATE keeps private paths off the public proxy/sumdb; public third-party
+          # still vendors via the proxy (proxy fetches are not VCS, so GOVCS allows them).
+          GOVCS: "*:off"
+          GOPRIVATE: "github.com/SpalkLtd/*"
           GOPROXY: "https://proxy.golang.org"
           # -mod=mod so the metadata/edit commands below ignore any vendor/ the repo
           # may already ship (otherwise go defaults to -mod=vendor and errors on the
@@ -173,7 +177,6 @@ jobs:
           [ -f "$CONTEXT/go.mod" ] || { echo "::error::no go.mod in build context '$CONTEXT'"; exit 1; }
 
           root="$(pwd -P)"
-          ctx_abs="$(cd "$CONTEXT" && pwd -P)"
           self="$(cd "$CONTEXT" && GOWORK=off go list -m)"
 
           # (#3) reject any go.work-level replace with a version — a network replace is
@@ -182,32 +185,43 @@ jobs:
             echo "::error::refusing a versioned (network) go.work replace — workspace-vendor allows local replaces only"; exit 1
           fi
 
-          # Derive replaces from go.work members (source of truth). Collect into an
-          # array in THIS shell (process substitution, not a pipe) so set -e holds and
-          # nothing is written until every member is validated in-tree.
+          # Derive replaces from go.work members (source of truth). Collect into an array
+          # in THIS shell (process substitution, not a pipe) so set -e holds. Replace
+          # targets are ABSOLUTE (no GNU-only realpath); the staged go.mod is never
+          # committed and -mod=vendor in the container never reads the target.
           declare -a edits=()
           while IFS= read -r disk; do
             case "$disk" in /*) d="$disk" ;; *) d="$root/${disk#./}" ;; esac
             d_abs="$(cd "$d" 2>/dev/null && pwd -P)" || { echo "::error::go.work member not found: $disk"; exit 1; }
             # (#3) path-traversal guard: member must resolve inside the repo tree.
             case "$d_abs/" in "$root"/*) : ;; *) echo "::error::go.work member '$disk' resolves outside the repo tree — refusing"; exit 1 ;; esac
-            [ -f "$d_abs/go.mod" ] || continue
-            mod="$(cd "$d_abs" && GOWORK=off go list -m 2>/dev/null)" || continue
+            # no silent skip: a member that has no go.mod, or whose module can't be read,
+            # is fatal — a skip would drop its replace and re-open the fetch path.
+            [ -f "$d_abs/go.mod" ] || { echo "::error::go.work member '$disk' has no go.mod"; exit 1; }
+            mod="$(cd "$d_abs" && GOWORK=off go list -m)" || { echo "::error::cannot read module in go.work member '$disk'"; exit 1; }
             if [ "$mod" = "$self" ]; then continue; fi
-            edits+=("$mod=$(realpath --relative-to="$ctx_abs" "$d_abs")")
+            edits+=("$mod=$d_abs")
           done < <(go work edit -json | jq -r '.Use[].DiskPath')
-          while IFS= read -r pair; do
-            [ -n "$pair" ] && edits+=("$pair")
-          done < <(go work edit -json | jq -r '.Replace // [] | .[] | "\(.Old.Path)=\(.New.Path)"')
+          # local go.work-level replaces (validated version-free above): absolutise any
+          # relative target from the repo root; reject anything that isn't a path.
+          while IFS=$'\t' read -r old new; do
+            [ -n "$old" ] || continue
+            case "$new" in
+              /*) : ;;
+              ./*|../*) new="$root/$new" ;;
+              *) echo "::error::unsupported go.work replace target '$new'"; exit 1 ;;
+            esac
+            edits+=("$old=$new")
+          done < <(go work edit -json | jq -r '.Replace // [] | .[] | "\(.Old.Path)\t\(.New.Path)"')
 
           # (#5) apply atomically + idempotently via `go mod edit` (safe on job retry;
           # no non-idempotent >> append).
           for e in "${edits[@]}"; do ( cd "$CONTEXT" && go mod edit -replace "$e" ); done
 
-          # (#4) fail BEFORE vendoring if a direct first-party (private) require is not
-          # covered by a local replace — otherwise go mod vendor would try to fetch it
-          # and leak the private module path to the public proxy. Forces every
-          # github.com/SpalkLtd/* dep to be a go.work member.
+          # Friendly early error: a direct first-party require that isn't a go.work
+          # member is almost always a missing member — fail with a clear message before
+          # GOVCS='*:off' hard-stops it. (GOVCS is the real backstop; it also covers the
+          # transitive / non-SpalkLtd cases this direct-require scan does not.)
           unreplaced="$(cd "$CONTEXT" && go mod edit -json | jq -r '
             (.Replace // [] | map(.Old.Path)) as $r
             | (.Require // [])[] | .Path
