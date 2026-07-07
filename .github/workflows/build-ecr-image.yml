@@ -22,6 +22,11 @@ on:
         description: "The Dockerfile to build"
         required: true
         type: string
+      context:
+        description: "Docker build context directory, relative to the repository root (e.g. apps/media/synchroniser for a monorepo caller). The SSH/gitconfig scaffold (docker/gitconfig, docker/ssh) resolves under this directory too. Note: `dockerfile` stays repository-root-relative. Default '.' preserves the standalone-repo behaviour."
+        required: false
+        type: string
+        default: "."
       artifact-name:
         description: "Name for the uploaded artifact (must be unique within the workflow run)"
         required: true
@@ -109,18 +114,25 @@ jobs:
       # This action copies the ~/.gitconfig and ~/.ssh files from the host, that were configured by the previous SpalkLtd/ssh-agent
       # step to correctly access github. It corrects the paths. We are not copying actual private keys, they are held in-memory at all
       # times by the ssh-agent, and crypto functions are done over the env.SSH_AUTH_SOCK socket.
+      # The docker/gitconfig + docker/ssh scaffold lives inside the build context
+      # (the service directory in a monorepo), because the Dockerfile COPYs it with
+      # context-relative paths. mkdir -p keeps this deterministic when a repo ships
+      # the directories empty (git does not track empty dirs).
       - name: Collect Git and SSH config files
         if: ${{ inputs.use-ssh }}
+        env:
+          BUILD_CONTEXT: ${{ inputs.context }}
         run: |
-          cp -f ~/.gitconfig docker/gitconfig/gitconfig
-          cp -r ~/.ssh/* docker/ssh
-          sed 's|/home/runner|/root|g' -i.bak docker/ssh/config
+          mkdir -p "$BUILD_CONTEXT/docker/gitconfig" "$BUILD_CONTEXT/docker/ssh"
+          cp -f ~/.gitconfig "$BUILD_CONTEXT/docker/gitconfig/gitconfig"
+          cp -r ~/.ssh/* "$BUILD_CONTEXT/docker/ssh"
+          sed 's|/home/runner|/root|g' -i.bak "$BUILD_CONTEXT/docker/ssh/config"
 
       - name: Build docker image to tarball
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           ssh: ${{ inputs.use-ssh && secrets.ssh-private-key != '' && format('default={0}', env.SSH_AUTH_SOCK) || '' }}
-          context: .
+          context: ${{ inputs.context }}
           build-args: ${{ inputs.build-args }}
           push: false
           tags: image:${{ inputs.tag }}

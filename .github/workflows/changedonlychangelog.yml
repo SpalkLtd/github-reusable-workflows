@@ -10,13 +10,18 @@ on:
                 description: 'Github pr number'
                 required: true
                 type: string
+            changelog_path:
+                description: 'Path of the changelog file that counts as "changelog only", relative to the repository root (e.g. apps/media/synchroniser/CHANGELOG.md for a monorepo caller). Default preserves the standalone-repo behaviour.'
+                required: false
+                type: string
+                default: 'CHANGELOG.md'
         secrets:
             githubToken:
                 description: 'Github token passed from the caller workflow'
                 required: true
         outputs:
             changelog_only:
-                description: "True iff CHANGELOG.md was the only file that changed for the PR"
+                description: "True iff the changelog (inputs.changelog_path) was the only file that changed for the PR"
                 value: ${{ jobs.check_changelog.outputs.changelog_only }}
 
 jobs:
@@ -42,4 +47,5 @@ jobs:
         id: set_output
         env:
           FILE_LIST: ${{ steps.get_file_data.outputs.file_list }}
-        run: '[[ "$FILE_LIST" == "CHANGELOG.md" ]] && echo "changelog_only=true" >> $GITHUB_OUTPUT || echo "changelog_only=false" >> $GITHUB_OUTPUT'
+          CHANGELOG_PATH: ${{ inputs.changelog_path }}
+        run: '[[ "$FILE_LIST" == "$CHANGELOG_PATH" ]] && echo "changelog_only=true" >> $GITHUB_OUTPUT || echo "changelog_only=false" >> $GITHUB_OUTPUT'

@@ -1,6 +1,12 @@
 name: Tag and Release
 on:
     workflow_call:
+        inputs:
+            prefix:
+                description: 'Optional tag namespace, INCLUDING the trailing separator (e.g. "synchroniser/"). When set: only commits whose subject starts with "cut version <prefix>" release (so one cut commit releases exactly one service), the version keeps its original case, the created tag is the full "<prefix>vX.Y.Z" string, and release notes are scoped to the latest existing "<prefix>*" tag. Unset (default) keeps the historical repo-global behaviour byte-identical.'
+                required: false
+                type: string
+                default: ''
         secrets:
             githubToken:
                 description: 'Github token passed from the caller workflow'
@@ -25,23 +31,99 @@ jobs:
               id: get-version
               env:
                   COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+                  TAG_PREFIX: ${{ inputs.prefix }}
               run: |
-                  GITHUB_PR_TITLE="$COMMIT_MESSAGE"
-                  GITHUB_PR_TITLE="${GITHUB_PR_TITLE^^}"
-                  GITHUB_PR_TITLE="${GITHUB_PR_TITLE#"CUT VERSION "}"
-                  GITHUB_PR_TAG="${GITHUB_PR_TITLE%% *}"
-                  echo "version=$GITHUB_PR_TAG" >> $GITHUB_OUTPUT
-            - name: Create Release
+                  if [ -z "$TAG_PREFIX" ]; then
+                      # Bare mode (no prefix): historical behaviour, unchanged.
+                      GITHUB_PR_TITLE="$COMMIT_MESSAGE"
+                      GITHUB_PR_TITLE="${GITHUB_PR_TITLE^^}"
+                      GITHUB_PR_TITLE="${GITHUB_PR_TITLE#"CUT VERSION "}"
+                      GITHUB_PR_TAG="${GITHUB_PR_TITLE%% *}"
+                      echo "version=$GITHUB_PR_TAG" >> $GITHUB_OUTPUT
+                      echo "matched=true" >> $GITHUB_OUTPUT
+                  else
+                      # Namespaced mode: the subject must name THIS caller's prefix
+                      # ("cut version <prefix>vX.Y.Z"), and case is PRESERVED —
+                      # uppercasing would mangle the tag ("SYNCHRONISER/V1.2.3").
+                      SUBJECT="${COMMIT_MESSAGE%%$'\n'*}"
+                      case "$SUBJECT" in
+                          "cut version ${TAG_PREFIX}"*)
+                              VERSION="${SUBJECT#cut version }"
+                              VERSION="${VERSION%% *}"
+                              echo "version=$VERSION" >> $GITHUB_OUTPUT
+                              echo "matched=true" >> $GITHUB_OUTPUT
+                              ;;
+                          *)
+                              # Another service's cut (or a malformed subject): skip
+                              # cleanly instead of creating a colliding bare tag.
+                              echo "Commit subject does not start with 'cut version ${TAG_PREFIX}' - not this service's cut, skipping."
+                              echo "version=" >> $GITHUB_OUTPUT
+                              echo "matched=false" >> $GITHUB_OUTPUT
+                              ;;
+                      esac
+                  fi
+            # Namespaced releases scope their generated notes to this service's
+            # previous tag; otherwise the notes would list every other service's
+            # commits since the last org-wide release.
+            - name: Find previous tag for scoped release notes
+              id: previous-tag
+              if: ${{ inputs.prefix != '' && steps.get-version.outputs.matched == 'true' }}
               uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
               env:
+                  TAG_PREFIX: ${{ inputs.prefix }}
                   VERSION: ${{ steps.get-version.outputs.version }}
               with:
                   github-token: ${{ secrets.githubToken }}
                   script: |
-                      github.rest.repos.createRelease({
+                      const prefix = process.env.TAG_PREFIX;
+                      const tags = await github.paginate(github.rest.repos.listTags, {
+                        owner: context.repo.owner,
+                        repo: context.repo.repo,
+                        per_page: 100,
+                      });
+                      const semverKey = (name) => {
+                        const m = name.slice(prefix.length).replace(/^[vV]/, '').match(/^(\d+)\.(\d+)\.(\d+)/);
+                        return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+                      };
+                      const candidates = tags
+                        .map((t) => t.name)
+                        .filter((n) => n.startsWith(prefix) && n !== process.env.VERSION)
+                        .map((n) => ({ name: n, key: semverKey(n) }))
+                        .filter((t) => t.key !== null)
+                        .sort((a, b) => a.key[0] - b.key[0] || a.key[1] - b.key[1] || a.key[2] - b.key[2]);
+                      const previous = candidates.length ? candidates[candidates.length - 1].name : '';
+                      core.setOutput('previous_tag', previous);
+                      core.info(previous
+                        ? `Release notes scoped from previous tag ${previous}`
+                        : `No previous '${prefix}' tag found - first namespaced release gets unscoped notes.`);
+            - name: Create Release
+              if: ${{ steps.get-version.outputs.matched == 'true' }}
+              uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+              env:
+                  VERSION: ${{ steps.get-version.outputs.version }}
+                  PREVIOUS_TAG: ${{ steps.previous-tag.outputs.previous_tag }}
+              with:
+                  github-token: ${{ secrets.githubToken }}
+                  script: |
+                      const params = {
                         owner: context.repo.owner,
                         repo: context.repo.repo,
                         tag_name: process.env.VERSION,
                         generate_release_notes: true,
                         name: `Release - ${process.env.VERSION}`
-                      })
+                      };
+                      if (process.env.PREVIOUS_TAG) {
+                        // createRelease has no previous_tag_name param, so generate
+                        // the scoped notes explicitly and pass them as the body.
+                        const notes = await github.rest.repos.generateReleaseNotes({
+                          owner: context.repo.owner,
+                          repo: context.repo.repo,
+                          tag_name: process.env.VERSION,
+                          target_commitish: context.sha,
+                          previous_tag_name: process.env.PREVIOUS_TAG,
+                        });
+                        params.body = notes.data.body;
+                        params.generate_release_notes = false;
+                        params.target_commitish = context.sha;
+                      }
+                      await github.rest.repos.createRelease(params)
