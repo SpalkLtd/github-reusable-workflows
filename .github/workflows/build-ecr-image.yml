@@ -181,7 +181,7 @@ jobs:
 
           # (#3) reject any go.work-level replace with a version — a network replace is
           # an attacker-directed fetch; only local-path replaces are allowed.
-          if go work edit -json | jq -e '[.Replace // [] | .[] | select(.New.Version != "")] | length > 0' >/dev/null; then
+          if go work edit -json | jq -e '[.Replace // [] | .[] | select((.New.Path // "") as $p | (($p|startswith("./")) or ($p|startswith("../")) or ($p|startswith("/"))) | not)] | length > 0' >/dev/null; then
             echo "::error::refusing a versioned (network) go.work replace — workspace-vendor allows local replaces only"; exit 1
           fi
 
