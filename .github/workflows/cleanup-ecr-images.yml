@@ -76,6 +76,11 @@ jobs:
               --query "imageDetails[?contains(to_string(imageTags), \`$pr_prefix\`) == \`true\`].[imageDigest]" \
               --output text)
 
+            if [ -z "$digests" ]; then
+              echo "No images matching prefix '$pr_prefix' found in $repository ($region). Nothing to clean up."
+              return 0
+            fi
+
             image_ids=""
             for digest in $digests; do
               image_ids+="imageDigest=$digest "
