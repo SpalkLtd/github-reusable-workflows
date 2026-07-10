@@ -123,11 +123,20 @@ jobs:
         id: publish
         env:
           FUNCTION_NAME: ${{ inputs.function-name }}
+        # `set -o pipefail` is required because the assignment below pipes aws → jq.
+        # Without it, an aws error sets only the failed-aws exit code, but the pipe's
+        # exit status comes from jq (which prints `null` and exits 0), leaving VERSION
+        # empty and silently passing the failure on to create-alias.
         run: |
+          set -o pipefail
           VERSION=$(aws lambda publish-version \
             --function-name "$FUNCTION_NAME" \
             --region ${{ inputs.aws-region }} \
             --output json | jq -r '.Version')
+          if [[ -z "$VERSION" || "$VERSION" == "null" ]]; then
+            echo "::error::publish-version returned an empty version. Check the aws error above."
+            exit 1
+          fi
           echo "Published Lambda version: ${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 

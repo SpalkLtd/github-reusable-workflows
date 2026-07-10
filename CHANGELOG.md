@@ -15,3 +15,4 @@
 - Move `${{ }}` expressions out of `run:` blocks into `env:` to prevent shell injection
 - Fix testing sheet workflows to use `actions/github-script` for JSON-safe command building and auto-insert missing rows on merge
 - Add `cleanup-lambda.yml` reusable workflow for PR-scoped Lambda alias/version/ZIP cleanup.
+- Harden `deploy-lambda.yml` publish-version step: enable `pipefail` and assert non-empty version so a failed `aws lambda publish-version` no longer silently produces an empty `version` output.
