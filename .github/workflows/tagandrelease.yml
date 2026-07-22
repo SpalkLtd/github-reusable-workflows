@@ -3,7 +3,7 @@ on:
     workflow_call:
         inputs:
             prefix:
-                description: 'Optional tag namespace, INCLUDING the trailing separator (e.g. "synchroniser/"). When set: only commits whose subject starts with "cut version <prefix>" release (so one cut commit releases exactly one service), the version keeps its original case, the created tag is the full "<prefix>vX.Y.Z" string, and release notes are scoped to the latest existing "<prefix>*" tag. Unset (default) keeps the historical repo-global behaviour byte-identical.'
+                description: 'Optional tag namespace, INCLUDING the trailing separator (e.g. "synchroniser/"). When set: the first message line (subject, or a "* "-bulleted squash-body line) starting with "cut version <prefix>" releases — so one squash-merged PR carrying one "cut version <service>/<version>" commit per service can cut several services, each caller matching only its own line. The version keeps its original case, the created tag is the full "<prefix>vX.Y.Z" string, and release notes are scoped to the latest existing "<prefix>*" tag. Unset (default) keeps the historical repo-global behaviour byte-identical.'
                 required: false
                 type: string
                 default: ''
@@ -42,25 +42,36 @@ jobs:
                       echo "version=$GITHUB_PR_TAG" >> $GITHUB_OUTPUT
                       echo "matched=true" >> $GITHUB_OUTPUT
                   else
-                      # Namespaced mode: the subject must name THIS caller's prefix
+                      # Namespaced mode: some line must name THIS caller's prefix
                       # ("cut version <prefix>vX.Y.Z"), and case is PRESERVED —
                       # uppercasing would mangle the tag ("SYNCHRONISER/V1.2.3").
-                      SUBJECT="${COMMIT_MESSAGE%%$'\n'*}"
-                      case "$SUBJECT" in
-                          "cut version ${TAG_PREFIX}"*)
-                              VERSION="${SUBJECT#cut version }"
-                              VERSION="${VERSION%% *}"
-                              echo "version=$VERSION" >> $GITHUB_OUTPUT
-                              echo "matched=true" >> $GITHUB_OUTPUT
-                              ;;
-                          *)
-                              # Another service's cut (or a malformed subject): skip
-                              # cleanly instead of creating a colliding bare tag.
-                              echo "Commit subject does not start with 'cut version ${TAG_PREFIX}' - not this service's cut, skipping."
-                              echo "version=" >> $GITHUB_OUTPUT
-                              echo "matched=false" >> $GITHUB_OUTPUT
-                              ;;
-                      esac
+                      # Squash-merged PRs carry each branch commit's subject as a
+                      # "* "-bulleted body line, so scanning every line lets one
+                      # merged PR (one cut commit per service) cut several services;
+                      # the line must START with the marker (after the bullet), so
+                      # prose mentioning a cut can never trigger a release.
+                      MATCHED_LINE=""
+                      while IFS= read -r LINE; do
+                          LINE="${LINE#\* }"
+                          case "$LINE" in
+                              "cut version ${TAG_PREFIX}"*)
+                                  MATCHED_LINE="$LINE"
+                                  break
+                                  ;;
+                          esac
+                      done <<< "$COMMIT_MESSAGE"
+                      if [ -n "$MATCHED_LINE" ]; then
+                          VERSION="${MATCHED_LINE#cut version }"
+                          VERSION="${VERSION%% *}"
+                          echo "version=$VERSION" >> $GITHUB_OUTPUT
+                          echo "matched=true" >> $GITHUB_OUTPUT
+                      else
+                          # Another service's cut (or a malformed subject): skip
+                          # cleanly instead of creating a colliding bare tag.
+                          echo "No message line starts with 'cut version ${TAG_PREFIX}' - not this service's cut, skipping."
+                          echo "version=" >> $GITHUB_OUTPUT
+                          echo "matched=false" >> $GITHUB_OUTPUT
+                      fi
                   fi
             # Namespaced releases scope their generated notes to this service's
             # previous tag; otherwise the notes would list every other service's
