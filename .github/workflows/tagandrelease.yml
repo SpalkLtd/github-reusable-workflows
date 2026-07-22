@@ -52,6 +52,7 @@ jobs:
                       # prose mentioning a cut can never trigger a release.
                       MATCHED_LINE=""
                       while IFS= read -r LINE; do
+                          LINE="${LINE%$'\r'}" # tolerate CRLF commit messages
                           LINE="${LINE#\* }"
                           case "$LINE" in
                               "cut version ${TAG_PREFIX}"*)
