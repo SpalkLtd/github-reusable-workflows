@@ -19,7 +19,7 @@ Reusable GitHub Workflows for the Spalk Organisation.
 | Workflow              | Purpose                                                | AWS Credentials         | Code Checkout |
 | --------------------- | ------------------------------------------------------ | ----------------------- | ------------- |
 | `build-lambda.yml`    | Build Go binary, upload as artifact                    | None                    | Yes           |
-| `deploy-lambda.yml`   | Deploy binary to Lambda, publish version, create alias | S3 + Lambda deploy      | No            |
+| `deploy-lambda.yml`   | Deploy binary to Lambda, publish version, create alias (and optionally re-point a moving alias via `moving-alias-name`) | S3 + Lambda deploy      | No            |
 | `activate-lambda.yml` | Update `current` alias (dev only)                      | Lambda UpdateAlias      | No            |
 | `cleanup-lambda.yml`  | Delete PR aliases, their versions, and optional ZIPs   | Lambda delete + S3 (opt.)| No            |
 
