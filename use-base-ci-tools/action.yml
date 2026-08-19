@@ -1,0 +1,173 @@
+# Overwrites head-side copies of CI verdict tools with the versions from the
+# base branch, so a PR cannot rewrite the code that judges it. The alternative
+# to sha256-pinning those files: no hashes to maintain, no pin cutover per tool
+# edit — the trade-off is that a PR changing a tool is judged by the OLD tool,
+# and the change is first exercised only after merge.
+#
+# SECURITY — this only means anything when the action itself is beyond the
+# reach of the PR being judged, and is called from a workflow that is likewise
+# base-resolved (SHA-pinned, or `@main` in the consuming repo's dispatcher):
+#   uses: SpalkLtd/github-reusable-workflows/use-base-ci-tools@<sha>
+# Living in a separate repository is what provides that: a PR in the consuming
+# repo cannot edit this file at all, so a SHA pin here is a genuine trust root
+# rather than one guarded by the consuming repo's own review rules.
+#
+# Never vendor this into the consuming repo and call it by local `./` path — a
+# local path resolves from the CHECKOUT, i.e. the PR head, and the PR could
+# then no-op the very step that is supposed to constrain it.
+#
+# Referencing a path in a large monorepo instead would make the runner download
+# and extract that whole repository into _actions/ for every job that uses the
+# step; keeping the action in this small repo is what keeps that cheap.
+#
+# Paths may be files or directories. Directories are restored recursively and
+# are the safer choice for a scripts/ dir: an explicit file list silently
+# drifts as scripts are added. Note a directory restore does not DELETE files
+# the PR added under it — they are inert unless something main-controlled
+# invokes them.
+#
+# Repo-agnostic: every API call is built from the CALLING workflow's `github`
+# context (`github.repository`, `github.token`, `github.api_url`), so the
+# action restores files from the consuming repo's own base ref, not this one.
+#
+# Works in every checkout variant used by the validate workflows: full, sparse,
+# blob:none, and container jobs where actions/checkout fell back to a tarball
+# download (no .git) — there it downloads the files via the API instead, which
+# needs jq (git/trees carries the base ref's file modes; the contents API does
+# not). Fails closed: a path missing on the base ref fails the step, as does an
+# empty `paths` or a mode that is not a regular file.
+name: Use base-branch CI tools
+description: Replace head-side copies of the given files or directories with the base branch's versions before anything executes them.
+
+inputs:
+  paths:
+    description: Newline-separated repo-relative files or directories to take from the base ref.
+    required: true
+  ref:
+    description: Base branch to take the files from.
+    required: false
+    default: main
+
+runs:
+  using: composite
+  steps:
+    - name: Restore base-ref copies
+      shell: bash
+      env:
+        PATHS: ${{ inputs.paths }}
+        REF: ${{ inputs.ref }}
+        REPO: ${{ github.repository }}
+        TOKEN: ${{ github.token }}
+        API_URL: ${{ github.api_url }}
+      run: |
+        set -euo pipefail
+
+        api_get() {
+          curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "$API_URL/repos/$REPO/$1"
+        }
+
+        fetch_file() {
+          # $2 is the git mode from the BASE ref. Do NOT stat the checkout: that
+          # reads the PR's bits and re-applies them over main's content, so a PR
+          # could chmod 644 a script main invokes as ./script — main's code runs
+          # back, unreadable, and the caller sees Permission denied instead of a
+          # verdict. 120000 (symlink) and 160000 (submodule) are rejected.
+          local p="$1" perms
+          case "$2" in
+            100755) perms=755 ;;
+            100644) perms=644 ;;
+            *) echo "::error::use-base-ci-tools: refusing unsupported git mode '$2' at '$p' on $REF"; exit 1 ;;
+          esac
+          mkdir -p "$(dirname "$p")"
+          curl -fsSL --retry 3 \
+            -H "Authorization: Bearer $TOKEN" \
+            -H "Accept: application/vnd.github.raw" \
+            "$API_URL/repos/$REPO/contents/$p?ref=$REF" -o "$p.base-ref"
+          mv "$p.base-ref" "$p"
+          chmod "$perms" "$p"
+        }
+
+        restore_api() {
+          local p="$1" dir base entry type gitmode listing bmode sub
+          dir=$(dirname "$p"); [ "$dir" = . ] && dir=""
+          base=$(basename "$p")
+          # git/trees carries the mode; the contents API does not. Looking the
+          # entry up in its parent tree yields blob-vs-tree at the same time,
+          # replacing the old probe-as-JSON-then-refetch-as-raw round-trip pair.
+          # (git/trees on a file path is a hard 422 — it must be a tree.)
+          entry=$(api_get "git/trees/$REF${dir:+:$dir}" \
+            | jq -r --arg n "$base" '.tree[] | select(.path == $n) | [.type, .mode] | @tsv')
+          [ -n "$entry" ] || { echo "::error::use-base-ci-tools: '$p' does not exist on $REF"; exit 1; }
+          IFS=$'\t' read -r type gitmode <<<"$entry"
+          if [ "$type" = blob ]; then
+            fetch_file "$p" "$gitmode"
+            return
+          fi
+          [ "$type" = tree ] || {
+            echo "::error::use-base-ci-tools: unsupported entry type '$type' at '$p' on $REF"; exit 1
+          }
+          # One recursive call for the whole subtree instead of a listing per
+          # directory. Paths come back subtree-relative.
+          listing=$(api_get "git/trees/$REF:$p?recursive=1")
+          [ "$(jq -r .truncated <<<"$listing")" = false ] || {
+            echo "::error::use-base-ci-tools: tree listing for '$p' on $REF was truncated — list files explicitly."
+            exit 1
+          }
+          while IFS=$'\t' read -r bmode sub; do
+            fetch_file "$p/$sub" "$bmode"
+          done < <(jq -r '.tree[] | select(.type == "blob") | [.mode, .path] | @tsv' <<<"$listing")
+        }
+
+        if git rev-parse --git-dir >/dev/null 2>&1; then
+          mode=git
+          # --depth=1 on a NON-shallow repo writes .git/shallow, grafting the
+          # base tip as parentless and breaking every later `A...HEAD` diff
+          # ("no merge base"). The callers that check out fetch-depth: 0 do
+          # exactly that afterwards, so only ask for depth when the repo is
+          # already shallow — a plain fetch never un-shallows one.
+          depth=()
+          [ "$(git rev-parse --is-shallow-repository)" = true ] && depth=(--depth=1)
+          git fetch --quiet --no-tags "${depth[@]}" origin "refs/heads/$REF"
+        else
+          # Container checkout without git falls back to a tarball — no .git to
+          # fetch into, so take the files from the contents API instead.
+          mode=api
+          command -v jq >/dev/null 2>&1 || {
+            echo "::error::use-base-ci-tools: this checkout has no .git, so paths resolve through the API — which needs jq to read the base ref's file modes. Install git or jq before this step."
+            exit 1
+          }
+        fi
+
+        restored=0
+        while IFS= read -r p; do
+          [ -z "$p" ] && continue
+          # Segment-wise traversal test: wrapping in slashes makes leading,
+          # interior and trailing '..' all reduce to '/../'. A plain *..*
+          # would also reject a legitimate 'scripts/v1..v2/gate.sh'.
+          case "$p" in
+            /*) echo "::error::use-base-ci-tools: refusing absolute path '$p'"; exit 1 ;;
+          esac
+          case "/$p/" in
+            */../*) echo "::error::use-base-ci-tools: refusing traversing path '$p'"; exit 1 ;;
+          esac
+          if [ "$mode" = git ]; then
+            # restore, not checkout: `git checkout <tree> -- <path>` writes the
+            # index too, leaving a staged delta for any later git-using step to
+            # trip over. Same content and mode, fails closed the same way.
+            git restore --source=FETCH_HEAD --worktree -- "$p"
+          else
+            restore_api "$p"
+          fi
+          echo "using $REF copy: $p"
+          restored=$((restored + 1))
+        done <<<"$PATHS"
+
+        # An empty or mis-keyed `paths` would otherwise exit 0 having restored
+        # nothing, with a green step implying the tools were protected.
+        if [ "$restored" -eq 0 ]; then
+          echo "::error::use-base-ci-tools: no paths restored — 'paths' was empty or missing."
+          exit 1
+        fi

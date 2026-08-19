@@ -42,6 +42,35 @@ The Lambda workflows enforce **artefact/activation separation**: `deploy-lambda.
 | `append-testing-sheet-entry.yml`  | Add PR to QA testing Google Sheet                |
 | `set-requires-testing-status.yml` | Update testing sheet status on merge             |
 
+## Composite actions
+
+| Action               | Purpose                                                          |
+| -------------------- | ---------------------------------------------------------------- |
+| `use-base-ci-tools`  | Replace a PR's copies of CI verdict tools with the base branch's |
+
+`use-base-ci-tools` exists so a pull request cannot rewrite the code that
+judges it. The consuming repo's validate workflows are resolved from a base ref,
+but the scripts they execute come from `actions/checkout` — the PR head. This
+step overwrites those copies with the base branch's before anything runs them.
+
+It must live **outside** the repo it protects: a PR in the consuming repo can
+edit any file in that repo, including a vendored copy of this action, so the
+trust root only holds while the action is somewhere the PR cannot reach. Pin it
+by SHA and never call it by local `./` path.
+
+```yaml
+- name: Use base-branch CI tools
+  uses: SpalkLtd/github-reusable-workflows/use-base-ci-tools@<sha>
+  with:
+    paths: |
+      tooling/ci/coverage-shard.go
+      scripts/coverage-gate.sh
+```
+
+Paths are repo-relative and may be files or directories; `ref` defaults to
+`main`. It fails closed — on a path missing from the base ref, on an empty
+`paths`, and on anything that is not a regular file.
+
 ## Example usage
 
 ```yaml
