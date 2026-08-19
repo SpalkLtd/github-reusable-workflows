@@ -14,14 +14,6 @@
 # by local `./` path — that resolves from the PR head, and the PR could no-op
 # the very step meant to constrain it.
 #
-# Pinning is NOT sufficient on its own. On `pull_request` the entry-point
-# workflow file itself comes from the PR's own merge commit, so a PR can always
-# delete this step, edit `paths:`, or append a later step that re-overwrites
-# the files. What actually binds is branch protection: put the step inside a
-# base-pinned reusable workflow and make THAT job a required status check. A
-# required check that never reports stays pending and blocks the merge. The
-# required check must not be satisfiable by a job the PR controls.
-#
 # `ref` is a fixed TRUST ROOT, not the PR's target branch. It deliberately does
 # not default to github.base_ref: that is chosen by the PR author, so a stacked
 # PR could open a branch carrying a neutered gate and then target it, supplying

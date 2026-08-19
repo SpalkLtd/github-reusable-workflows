@@ -67,20 +67,6 @@ by SHA and never call it by local `./` path.
       scripts/coverage-gate.sh
 ```
 
-### Pinning alone does not protect you
-
-On `pull_request`, GitHub runs the workflow file from the PR's own merge commit
-— a commit controlled by someone without write access to the base repository.
-So a PR can delete this step, edit its `paths:`, or append a later step that
-overwrites the files again. Pinning the *action* by SHA does not help, because
-the *call site* is PR-controlled.
-
-What binds is branch protection. Put the step inside a reusable workflow in
-this repo, call it `@<sha>`, and make that job a **required status check**: a
-required check that never reports stays pending and blocks the merge. The
-required check must be the job produced by the base-pinned workflow, and must
-not be satisfiable by a job the PR controls.
-
 ### Inputs
 
 `paths` is a newline-separated list of repo-relative files or directories.
