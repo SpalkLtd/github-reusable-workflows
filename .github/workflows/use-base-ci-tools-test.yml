@@ -13,10 +13,20 @@ name: 'test: use-base-ci-tools'
 #
 # Fixtures and their modes are documented in use-base-ci-tools/testdata/.
 
+# Scoped to the action and its own definition: nothing else in this repo can
+# affect the result. The one external dependency is the fixture used by the
+# out-of-cone job below, and that job verifies its own fixture rather than
+# relying on this filter to notice it moved.
 on:
   pull_request:
+    paths:
+      - 'use-base-ci-tools/**'
+      - '.github/workflows/use-base-ci-tools-test.yml'
   push:
     branches: [main]
+    paths:
+      - 'use-base-ci-tools/**'
+      - '.github/workflows/use-base-ci-tools-test.yml'
 
 permissions:
   contents: read
@@ -382,6 +392,11 @@ jobs:
       - uses: actions/checkout@v4
         with:
           sparse-checkout: use-base-ci-tools
+      # This job's fixture lives outside use-base-ci-tools/, so the paths filter
+      # on this workflow will not re-run it if that path moves. Verify it here
+      # instead: the target must exist on the base ref (or the action would
+      # fail closed for the wrong reason and this test would still pass) and
+      # must be absent from the working tree (or there is nothing to detect).
       - name: Baseline
         run: |
           set -euo pipefail
@@ -389,7 +404,11 @@ jobs:
             || { echo "::error::fixture broken: the action is not in the sparse cone"; exit 1; }
           [ -e jest-coverage-report-action/run.sh ] \
             && { echo "::error::fixture broken: the target path IS in the cone"; exit 1; }
-          echo "baseline ok: action present, target path outside the cone"
+          # ls-tree, not cat-file: reads the tree only, so it works under the
+          # partial clone a sparse checkout uses without fetching the blob.
+          [ -n "$(git ls-tree HEAD -- jest-coverage-report-action/run.sh)" ] \
+            || { echo "::error::fixture broken: the target path no longer exists in the repo, so this job would pass on a missing-from-base error instead of the guard it is testing"; exit 1; }
+          echo "baseline ok: action in cone, target tracked but absent from the working tree"
       - name: 'restore a path outside the sparse cone'
         id: outside
         continue-on-error: true
