@@ -71,13 +71,32 @@ runs:
       run: |
         set -euo pipefail
 
+        # Drop every inherited GIT_* variable before running git. An earlier
+        # step can write these via $GITHUB_ENV, and GIT_DIR alone redirects the
+        # whole git branch at a decoy repo — delivering attacker-chosen content
+        # at an attacker-chosen mode with this step's success message vouching
+        # for it. GIT_CONFIG_COUNT + core.fsmonitor goes further and reaches
+        # command execution inside our own cat-file/ls-tree/checkout.
+        #
+        # Prefix expansion, NOT a denylist: two hand-written denylists both
+        # missed the GIT_CONFIG_KEY_n/VALUE_n pairs, which are the half that
+        # carries the execution vector. This form is complete by construction,
+        # leaves GITHUB_* alone, and is a no-op under set -u when nothing
+        # matches. It does NOT close the PATH vector — see the ordering note.
+        unset "${!GIT_@}"
+
         err() { echo "::error::use-base-ci-tools: $*"; }
 
         ROOT=$(pwd -P)
 
         # ---------------------------------------------------------- API mode
+        # -q FIRST, and it must stay first: it is positional, so `curl -fsSL -q`
+        # is a silent no-op. Without it curl reads $HOME/.curlrc, where a
+        # proxy+insecure directive MITMs both API calls — controlling the tree
+        # listing (hence the mode we validate) and the contents body (hence the
+        # bytes we write). No CI action should honour a user rc file.
         api_get() {
-          curl -fsSL --retry 3 --max-time 120 \
+          curl -q -fsSL --retry 3 --max-time 120 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "$API_URL/repos/$REPO/$1"
@@ -140,18 +159,18 @@ runs:
           # DIRECTORY at "$p" was the same class of bug: `mv file dir` drops the
           # file inside and leaves the directory in place, exit 0.
           tmp=$(mktemp)
-          curl -fsSL --retry 3 --max-time 120 \
+          curl -q -fsSL --retry 3 --max-time 120 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github.raw" \
             "$API_URL/repos/$REPO/contents/$(uri_path "$p")?ref=$(uri_seg "$REF")" -o "$tmp"
           rm -rf -- "$p"
           mv -T -- "$tmp" "$p"
-          chmod "$perms" "$p"
+          chmod "$perms" -- "$p"
           restored=$((restored + 1))
         }
 
         restore_api() {
-          local p="$1" dir base entry type gitmode listing rows bmode sub
+          local p="$1" dir base entry type gitmode listing rows bad bmode sub
           dir=$(dirname -- "$p"); [ "$dir" = . ] && dir=""
           base=$(basename -- "$p")
           # git/trees carries the mode; the contents API does not. Looking the
@@ -182,6 +201,16 @@ runs:
           rows=$(jq -r '.tree[] | select(.type == "blob") | [.mode, .path] | @tsv' <<<"$listing") \
             || { err "could not parse the tree listing for '$p' on $REF"; exit 1; }
           [ -n "$rows" ] || { err "'$p' on $REF contains no restorable files"; exit 1; }
+          # Validate every mode BEFORE writing anything, so the two engines
+          # agree on all-or-nothing. git mode refuses the whole subtree up
+          # front and writes nothing; without this pre-pass the API path
+          # refused mid-loop, so a caller using continue-on-error — as this
+          # repo's own self-test does at nine sites — was left with a tree that
+          # is part base, part head, and a non-fatal outcome.
+          bad=$(awk -F'\t' '$1 != "100644" && $1 != "100755" { print $1" "$2 }' <<<"$rows")
+          [ -z "$bad" ] || {
+            err "refusing unsupported git mode under '$p' on $REF: $(echo "$bad" | tr '\n' ' ')"
+            exit 1; }
           while IFS=$'\t' read -r bmode sub; do
             [ -n "$sub" ] || continue
             fetch_file "$p/$sub" "$bmode"

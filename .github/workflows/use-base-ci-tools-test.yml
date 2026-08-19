@@ -32,7 +32,8 @@ permissions:
   contents: read
 
 env:
-  # head_ref on pull_request; ref_name on a push to main.
+  # head_ref on pull_request; ref_name on a push to main. Every job reads this
+  # via ${{ env.BASE }} — do not re-inline the expression at the call sites.
   BASE: ${{ github.head_ref || github.ref_name }}
 
 jobs:
@@ -41,7 +42,7 @@ jobs:
     name: 'git mode: full clone'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
 
@@ -68,9 +69,26 @@ jobs:
           git -c user.email=t@t -c user.name=t add dir/pr-tracked.txt
           printf 'pr\n' > dir/pr-untracked.txt
 
+          # COMMIT the tamper, so HEAD and FETCH_HEAD actually diverge.
+          #
+          # Without this the worktree, HEAD and the fetched ref are all
+          # byte-identical, and the suite cannot tell "restored from $REF" from
+          # "restored from HEAD" — swapping FETCH_HEAD for HEAD in the action
+          # would leave every assertion below green. That is the one regression
+          # which silently converts this control into "run the PR's own tools",
+          # so it is the one the suite must be able to see.
+          #
+          # The commit is local and never pushed, so the API path still reads
+          # pristine content for this branch from the server.
+          #
+          # -a stages tracked modifications ONLY. Do not "tidy" this into
+          # `git add -A`: dir/pr-untracked.txt has to stay untracked for the
+          # survives-a-directory-restore assertion further down.
+          git -c user.email=t@t -c user.name=t commit -qam 'tamper'
+
       - uses: ./use-base-ci-tools
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: |
             use-base-ci-tools/testdata/exec.sh
             use-base-ci-tools/testdata/plain.txt
@@ -81,7 +99,12 @@ jobs:
           set -euo pipefail
           fail=0
           eq() { [ "$2" = "$3" ] && echo "  ok   $1 ($3)" || { echo "::error::FAIL $1 — want '$2', got '$3'"; fail=1; }; }
-          clean() { grep -q TAMPERED "$1" && { echo "::error::FAIL $1 still tampered"; fail=1; } || echo "  ok   $1 reverted"; }
+          # The -f guard is load-bearing: grep exits 2 on a missing file, so
+          # without it the || branch fires and a DELETED file reports "reverted".
+          clean() {
+            [ -f "$1" ] || { echo "::error::FAIL $1 is missing"; fail=1; return; }
+            grep -q TAMPERED "$1" && { echo "::error::FAIL $1 still tampered"; fail=1; } || echo "  ok   $1 reverted"
+          }
           cd use-base-ci-tools/testdata
 
           clean exec.sh; clean plain.txt; clean dir/nested-exec.sh; clean dir/nested-plain.txt
@@ -111,7 +134,7 @@ jobs:
     name: 'git mode: shallow clone'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 1
       - name: Baseline
@@ -127,7 +150,7 @@ jobs:
           chmod 644 use-base-ci-tools/testdata/exec.sh
       - uses: ./use-base-ci-tools
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: use-base-ci-tools/testdata/exec.sh
       - name: Assert
         run: |
@@ -157,7 +180,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install dependencies
         run: |
           apt-get update
@@ -176,7 +199,7 @@ jobs:
           printf 'TAMPERED\n' > dir/nested-exec.sh; chmod 600 dir/nested-exec.sh
       - uses: ./use-base-ci-tools
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: |
             use-base-ci-tools/testdata/exec.sh
             use-base-ci-tools/testdata/plain.txt
@@ -186,7 +209,12 @@ jobs:
           set -euo pipefail
           fail=0
           eq() { [ "$2" = "$3" ] && echo "  ok   $1 ($3)" || { echo "::error::FAIL $1 — want '$2', got '$3'"; fail=1; }; }
-          clean() { grep -q TAMPERED "$1" && { echo "::error::FAIL $1 still tampered"; fail=1; } || echo "  ok   $1 reverted"; }
+          # The -f guard is load-bearing: grep exits 2 on a missing file, so
+          # without it the || branch fires and a DELETED file reports "reverted".
+          clean() {
+            [ -f "$1" ] || { echo "::error::FAIL $1 is missing"; fail=1; return; }
+            grep -q TAMPERED "$1" && { echo "::error::FAIL $1 still tampered"; fail=1; } || echo "  ok   $1 reverted"
+          }
           cd use-base-ci-tools/testdata
           clean exec.sh; clean plain.txt; clean dir/nested-exec.sh
           eq "exec.sh mode from BASE (head had 644)"   755 "$(stat -c %a exec.sh)"
@@ -196,6 +224,33 @@ jobs:
           [ -x exec.sh ] && echo "  ok   restored script is executable" \
             || { echo "::error::FAIL restored script not executable"; fail=1; }
           exit $fail
+
+      # The API-mode half of the same question the git-mode commit answers: is
+      # the restore actually pinned to $REF? Deleting `?ref=` from the contents
+      # URL silently serves the DEFAULT branch, and every fixture assertion
+      # above would still pass. README.md is the discriminator because it
+      # exists on both refs with different content.
+      #
+      # NOTE: this decays. Once this PR merges, main's README gains these same
+      # lines and the two refs stop differing. Replace it then with a fixture
+      # that is divergent by construction — a '#' in the filename is the
+      # candidate, since the unencoded URL 404s regardless of what main holds.
+      - name: 'Tamper a file that differs between this ref and the default branch'
+        run: |
+          set -euo pipefail
+          printf 'TAMPERED\n' > README.md
+      - uses: ./use-base-ci-tools
+        with:
+          ref: ${{ env.BASE }}
+          paths: README.md
+      - name: 'Assert the content came from $REF and not the default branch'
+        run: |
+          set -euo pipefail
+          grep -q TAMPERED README.md \
+            && { echo "::error::FAIL README.md still tampered"; exit 1; }
+          grep -q 'use-base-ci-tools' README.md \
+            || { echo "::error::FAIL restored README.md lacks this branch's content — the restore was not pinned to $BASE"; exit 1; }
+          echo "  ok   restore is pinned to \$REF, not the default branch"
 
   # --------------------------------------------------------------- attacks
   # All API-mode: git mode replaces a planted symlink or directory correctly on
@@ -211,7 +266,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - name: Install dependencies
         run: |
           apt-get update
@@ -228,7 +283,7 @@ jobs:
           ln -sf plain.txt exec.sh.base-ref
       - uses: ./use-base-ci-tools
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: use-base-ci-tools/testdata/exec.sh
       - name: 'Assert the tool path is a real file, not a symlink'
         run: |
@@ -248,7 +303,7 @@ jobs:
           rm -f plain.txt && mkdir -p plain.txt && printf 'decoy\n' > plain.txt/decoy
       - uses: ./use-base-ci-tools
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: use-base-ci-tools/testdata/plain.txt
       - name: 'Assert the tool path is a file again'
         run: |
@@ -261,9 +316,12 @@ jobs:
       # A symlinked path COMPONENT escapes the string-based .. guard: with
       # 'testdata' a symlink, mkdir -p succeeds through it and the write lands
       # wherever it points.
+      # No continue-on-error here: this step must HARD FAIL if the fixture
+      # cannot be built. With it, `rm -rf` succeeding and `ln -s` failing left
+      # testdata/ simply gone, the action then failed on the none-of-the-paths
+      # -exist guard, and the assertion below passed because SENTINEL was
+      # untouched — for the trivial reason that nothing was ever attempted.
       - name: 'Plant a symlinked path component pointing outside the workspace'
-        id: escape
-        continue-on-error: true
         run: |
           set -euo pipefail
           mkdir -p /tmp/outside
@@ -274,7 +332,7 @@ jobs:
         id: escape-restore
         continue-on-error: true
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: use-base-ci-tools/testdata/exec.sh
       - name: 'Assert the write was refused and nothing outside changed'
         env:
@@ -286,48 +344,93 @@ jobs:
             || { echo "::error::FAIL a file outside the workspace was overwritten"; exit 1; }
           echo "  ok   symlinked path component refused, nothing written outside the workspace"
 
+  # The git-mode half of a guarantee the header claims for BOTH engines.
+  # assert_contained is reachable only from the API path, so git mode's half
+  # rests entirely on git's own unpack-trees hardening. That is correct today —
+  # verified independently by three reviewers — but it is third-party behaviour
+  # this repo does not pin, and without this job nothing would notice it
+  # changing. Zero exploitability; this is drift insurance.
+  git-mode-escape:
+    name: 'git mode: symlinked path component cannot escape'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - name: 'Plant a symlinked path component pointing outside the workspace'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/outside-git
+          printf 'SENTINEL\n' > /tmp/outside-git/exec.sh
+          rm -rf use-base-ci-tools/testdata
+          ln -s /tmp/outside-git use-base-ci-tools/testdata
+      - uses: ./use-base-ci-tools
+        id: git-escape-restore
+        continue-on-error: true
+        with:
+          ref: ${{ env.BASE }}
+          paths: use-base-ci-tools/testdata/exec.sh
+      - name: 'Assert nothing was written outside the workspace'
+        env:
+          OUTCOME: ${{ steps.git-escape-restore.outcome }}
+        run: |
+          set -euo pipefail
+          # The only hard requirement. Refusing and replacing the symlink with a
+          # real directory are both safe outcomes; writing through the link is
+          # not, so this is asserted regardless of how the step exited.
+          grep -q SENTINEL /tmp/outside-git/exec.sh \
+            || { echo "::error::FAIL a file outside the workspace was overwritten"; exit 1; }
+          echo "  ok   nothing outside the workspace was written (restore outcome: $OUTCOME)"
+
+          # If it DID restore, the bytes must have landed inside the checkout.
+          if [ "$OUTCOME" = success ]; then
+            resolved=$(realpath -m -- use-base-ci-tools/testdata/exec.sh)
+            case "$resolved" in
+              "$GITHUB_WORKSPACE"/*) echo "  ok   restored inside the workspace ($resolved)" ;;
+              *) echo "::error::FAIL restored to '$resolved', outside the workspace"; exit 1 ;;
+            esac
+          fi
+
   # ---------------------------------------------------------- fail-closed
   fail-closed:
     name: 'fail-closed guards'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
       - name: 'empty paths'
         id: empty
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: '' }
+        with: { ref: '${{ env.BASE }}', paths: '' }
 
       - name: 'absolute path'
         id: absolute
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: /etc/passwd }
+        with: { ref: '${{ env.BASE }}', paths: /etc/passwd }
 
       - name: 'leading traversal'
         id: traversal
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: ../../etc/passwd }
+        with: { ref: '${{ env.BASE }}', paths: ../../etc/passwd }
 
       - name: 'interior traversal'
         id: interior
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: use-base-ci-tools/../../etc/passwd }
+        with: { ref: '${{ env.BASE }}', paths: use-base-ci-tools/../../etc/passwd }
 
       - name: 'empty path segment'
         id: emptyseg
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools//testdata/exec.sh' }
+        with: { ref: '${{ env.BASE }}', paths: 'use-base-ci-tools//testdata/exec.sh' }
 
       - name: 'path missing from the base ref'
         id: missing
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/not-on-base.sh' }
+        with: { ref: '${{ env.BASE }}', paths: 'use-base-ci-tools/testdata/not-on-base.sh' }
 
       # git would restore a 120000 faithfully, as a symlink; the API path cannot
       # represent one at all. Both must refuse, or the guarantee holds in only
@@ -337,18 +440,18 @@ jobs:
         id: symlink
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/symlink.txt' }
+        with: { ref: '${{ env.BASE }}', paths: 'use-base-ci-tools/testdata/symlink.txt' }
 
       - name: 'symlink NESTED inside a restored directory'
         id: nestedsymlink
         continue-on-error: true
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/dir-with-symlink' }
+        with: { ref: '${{ env.BASE }}', paths: 'use-base-ci-tools/testdata/dir-with-symlink' }
 
       - name: 'control: a valid path must still succeed'
         id: control
         uses: ./use-base-ci-tools
-        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/exec.sh' }
+        with: { ref: '${{ env.BASE }}', paths: 'use-base-ci-tools/testdata/exec.sh' }
 
       - name: Assert
         env:
@@ -389,7 +492,7 @@ jobs:
       # The cone must still contain the action itself, or the local `uses:`
       # below could not resolve. jest-coverage-report-action/ is outside it and
       # exists on the base ref, which is exactly the shape being tested.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           sparse-checkout: use-base-ci-tools
       # This job's fixture lives outside use-base-ci-tools/, so the paths filter
@@ -414,12 +517,27 @@ jobs:
         continue-on-error: true
         uses: ./use-base-ci-tools
         with:
-          ref: ${{ github.head_ref || github.ref_name }}
+          ref: ${{ env.BASE }}
           paths: jest-coverage-report-action/run.sh
+      # Positive control, mirroring the one in fail-closed. Without it this job
+      # reports green whenever the action merely fails for ANY reason — a fork
+      # PR, network, token scope, a ref typo — which is the exact failure class
+      # this whole action exists to prevent, occurring inside its own assurance.
+      - name: 'control: an in-cone path must still succeed'
+        id: incone
+        uses: ./use-base-ci-tools
+        with:
+          ref: ${{ env.BASE }}
+          paths: use-base-ci-tools/action.yml
       - name: Assert
         env:
           OUTCOME: ${{ steps.outside.outcome }}
+          CONTROL: ${{ steps.incone.outcome }}
         run: |
           set -euo pipefail
+          fail=0
           [ "$OUTCOME" = failure ] && echo "  ok   absent-from-checkout rejected" \
-            || { echo "::error::FAIL a path absent from the checkout was accepted (outcome=$OUTCOME)"; exit 1; }
+            || { echo "::error::FAIL a path absent from the checkout was accepted (outcome=$OUTCOME)"; fail=1; }
+          [ "$CONTROL" = success ] && echo "  ok   control path accepted" \
+            || { echo "::error::FAIL control path rejected (outcome=$CONTROL) — this job is passing because the action is broken, not because the guard works"; fail=1; }
+          exit $fail

@@ -58,6 +58,20 @@ edit any file in that repo, including a vendored copy of this action, so the
 trust root only holds while the action is somewhere the PR cannot reach. Pin it
 by SHA and never call it by local `./` path.
 
+**Pinning the action is not sufficient on its own.** On `pull_request`, GitHub
+runs the workflow file from the PR's own merge commit — a commit controlled by
+someone without write access to the base repository. So a PR can delete this
+step, edit its `paths:`, or append a later step that overwrites the files
+again. The action file is beyond the PR's reach; the *call site* is not.
+
+What closes that is the shape of the calling workflow. It must itself be
+resolved from the base ref — `pull_request_target`, `merge_group` or `push` —
+and because such a workflow runs with base-branch privileges against
+PR-controlled content, it must earn that by doing nothing else: no build, no
+dependency install, no PR code executed before this step. Restrict it to the
+restore and the verdict, give it `permissions: contents: read`, and pass it no
+secrets.
+
 ```yaml
 - name: Use base-branch CI tools
   uses: SpalkLtd/github-reusable-workflows/use-base-ci-tools@<sha>
