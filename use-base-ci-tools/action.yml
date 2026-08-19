@@ -4,38 +4,46 @@
 # edit — the trade-off is that a PR changing a tool is judged by the OLD tool,
 # and the change is first exercised only after merge.
 #
-# SECURITY — this only means anything when the action itself is beyond the
-# reach of the PR being judged, and is called from a workflow that is likewise
-# base-resolved (SHA-pinned, or `@main` in the consuming repo's dispatcher):
+# SECURITY — what this does and does not buy you.
+#
+# It only means anything when the action is beyond the reach of the PR being
+# judged, which is why it lives in this repo rather than the one it protects:
 #   uses: SpalkLtd/github-reusable-workflows/use-base-ci-tools@<sha>
-# Living in a separate repository is what provides that: a PR in the consuming
-# repo cannot edit this file at all, so a SHA pin here is a genuine trust root
-# rather than one guarded by the consuming repo's own review rules.
+# A PR in the consuming repo cannot edit this file at any ref, so the SHA pin
+# is a genuine trust root. Never vendor it into the consuming repo and call it
+# by local `./` path — that resolves from the PR head, and the PR could no-op
+# the very step meant to constrain it.
 #
-# Never vendor this into the consuming repo and call it by local `./` path — a
-# local path resolves from the CHECKOUT, i.e. the PR head, and the PR could
-# then no-op the very step that is supposed to constrain it.
+# Pinning is NOT sufficient on its own. On `pull_request` the entry-point
+# workflow file itself comes from the PR's own merge commit, so a PR can always
+# delete this step, edit `paths:`, or append a later step that re-overwrites
+# the files. What actually binds is branch protection: put the step inside a
+# base-pinned reusable workflow and make THAT job a required status check. A
+# required check that never reports stays pending and blocks the merge. The
+# required check must not be satisfiable by a job the PR controls.
 #
-# Referencing a path in a large monorepo instead would make the runner download
-# and extract that whole repository into _actions/ for every job that uses the
-# step; keeping the action in this small repo is what keeps that cheap.
+# `ref` is a fixed TRUST ROOT, not the PR's target branch. It deliberately does
+# not default to github.base_ref: that is chosen by the PR author, so a stacked
+# PR could open a branch carrying a neutered gate and then target it, supplying
+# its own judge. The honest cost is that a PR targeting release/1.2 is still
+# judged by main's tools unless the caller overrides `ref`.
 #
-# Paths may be files or directories. Directories are restored recursively and
-# are the safer choice for a scripts/ dir: an explicit file list silently
-# drifts as scripts are added. Note a directory restore does not DELETE files
-# the PR added under it — they are inert unless something main-controlled
-# invokes them.
+# Paths may be files or directories; directories are restored recursively and
+# are the safer choice for a scripts/ dir, since an explicit file list silently
+# drifts as scripts are added. A directory restore does not delete files the PR
+# added under it — verified for both tracked and untracked additions — so those
+# remain, inert unless something base-controlled invokes them.
 #
-# Repo-agnostic: every API call is built from the CALLING workflow's `github`
-# context (`github.repository`, `github.token`, `github.api_url`), so the
-# action restores files from the consuming repo's own base ref, not this one.
+# Works in every checkout variant in use: full, sparse, blob:none, and bare
+# container jobs where actions/checkout fell back to a tarball (no .git), where
+# it downloads through the API instead and needs curl and jq (git/trees carries
+# the base ref's file modes; the contents API does not).
 #
-# Works in every checkout variant used by the validate workflows: full, sparse,
-# blob:none, and container jobs where actions/checkout fell back to a tarball
-# download (no .git) — there it downloads the files via the API instead, which
-# needs jq (git/trees carries the base ref's file modes; the contents API does
-# not). Fails closed: a path missing on the base ref fails the step, as does an
-# empty `paths` or a mode that is not a regular file.
+# Fails closed on: a path missing from the base ref, an empty `paths`, a mode
+# that is not a regular file, a path escaping the workspace, a tree listing
+# that is truncated or yields no files, and a workspace where none of the
+# requested paths exist (which means the step ran before actions/checkout or
+# against the wrong working directory).
 name: Use base-branch CI tools
 description: Replace head-side copies of the given files or directories with the base branch's versions before anything executes them.
 
@@ -44,7 +52,9 @@ inputs:
     description: Newline-separated repo-relative files or directories to take from the base ref.
     required: true
   ref:
-    description: Base branch to take the files from.
+    description: >-
+      Fixed base ref to take the files from — a trust root, not the PR's target
+      branch. See the SECURITY note above before changing it.
     required: false
     default: main
 
@@ -62,112 +72,214 @@ runs:
       run: |
         set -euo pipefail
 
+        err() { echo "::error::use-base-ci-tools: $*"; }
+
+        ROOT=$(pwd -P)
+
+        # ---------------------------------------------------------- API mode
         api_get() {
-          curl -fsSL --retry 3 \
+          curl -fsSL --retry 3 --max-time 120 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github+json" \
             "$API_URL/repos/$REPO/$1"
         }
 
+        # Percent-encode one path segment. Without this a '#' truncates the URL
+        # and drops the ?ref= pin — silently serving the DEFAULT branch instead
+        # of the base ref — and a '+' decodes to a space.
+        uri_seg() { jq -rn --arg s "$1" '$s|@uri'; }
+
+        uri_path() {
+          local rest="$1" out="" seg
+          while :; do
+            seg="${rest%%/*}"
+            out="$out/$(uri_seg "$seg")"
+            [ "$seg" = "$rest" ] && break
+            rest="${rest#*/}"
+          done
+          printf '%s' "${out#/}"
+        }
+
+        # Confirm a path still lands inside the checkout after symlink
+        # resolution. The string guards below cannot see a symlinked path
+        # COMPONENT: with 'scripts' a symlink, mkdir -p succeeds through it and
+        # the write lands wherever it points.
+        assert_contained() {
+          local p="$1" resolved
+          resolved=$(realpath -m -- "$ROOT/$p")
+          case "$resolved" in
+            "$ROOT"/*) ;;
+            *) err "refusing '$p' — it resolves to '$resolved', outside the workspace"; exit 1 ;;
+          esac
+        }
+
         fetch_file() {
           # $2 is the git mode from the BASE ref. Do NOT stat the checkout: that
-          # reads the PR's bits and re-applies them over main's content, so a PR
-          # could chmod 644 a script main invokes as ./script — main's code runs
-          # back, unreadable, and the caller sees Permission denied instead of a
-          # verdict. 120000 (symlink) and 160000 (submodule) are rejected.
-          local p="$1" perms
+          # reads the PR's bits and re-applies them over base content, so a PR
+          # could chmod 644 a script the base invokes as ./script and turn a
+          # verdict into a swallowed "Permission denied".
+          local p="$1" perms tmp
           case "$2" in
             100755) perms=755 ;;
             100644) perms=644 ;;
-            *) echo "::error::use-base-ci-tools: refusing unsupported git mode '$2' at '$p' on $REF"; exit 1 ;;
+            *) err "refusing unsupported git mode '$2' at '$p' on $REF"; exit 1 ;;
           esac
-          mkdir -p "$(dirname "$p")"
-          curl -fsSL --retry 3 \
+          assert_contained "$p"
+          mkdir -p -- "$(dirname -- "$p")"
+
+          # Download to a private temp file, NOT to "$p.base-ref" inside the
+          # tree. A PR can commit "<path>.base-ref" as a symlink: curl -o would
+          # follow it and mv would then move the SYMLINK into place, leaving the
+          # tool path pointing at a different base tool. Every executed byte
+          # stays genuine base content, so a content hash would not notice —
+          # what gets rewritten is the binding from path to tool. Committing a
+          # DIRECTORY at "$p" was the same class of bug: `mv file dir` drops the
+          # file inside and leaves the directory in place, exit 0.
+          tmp=$(mktemp)
+          curl -fsSL --retry 3 --max-time 120 \
             -H "Authorization: Bearer $TOKEN" \
             -H "Accept: application/vnd.github.raw" \
-            "$API_URL/repos/$REPO/contents/$p?ref=$REF" -o "$p.base-ref"
-          mv "$p.base-ref" "$p"
+            "$API_URL/repos/$REPO/contents/$(uri_path "$p")?ref=$(uri_seg "$REF")" -o "$tmp"
+          rm -rf -- "$p"
+          mv -T -- "$tmp" "$p"
           chmod "$perms" "$p"
+          restored=$((restored + 1))
         }
 
         restore_api() {
-          local p="$1" dir base entry type gitmode listing bmode sub
-          dir=$(dirname "$p"); [ "$dir" = . ] && dir=""
-          base=$(basename "$p")
+          local p="$1" dir base entry type gitmode listing rows bmode sub
+          dir=$(dirname -- "$p"); [ "$dir" = . ] && dir=""
+          base=$(basename -- "$p")
           # git/trees carries the mode; the contents API does not. Looking the
-          # entry up in its parent tree yields blob-vs-tree at the same time,
-          # replacing the old probe-as-JSON-then-refetch-as-raw round-trip pair.
-          # (git/trees on a file path is a hard 422 — it must be a tree.)
-          entry=$(api_get "git/trees/$REF${dir:+:$dir}" \
-            | jq -r --arg n "$base" '.tree[] | select(.path == $n) | [.type, .mode] | @tsv')
-          [ -n "$entry" ] || { echo "::error::use-base-ci-tools: '$p' does not exist on $REF"; exit 1; }
+          # entry up in its PARENT tree yields blob-vs-tree at the same time
+          # (git/trees on a file path is a hard 422).
+          listing=$(api_get "git/trees/$(uri_seg "$REF")${dir:+:$(uri_path "$dir")}") \
+            || { err "could not list the parent tree of '$p' on $REF"; exit 1; }
+          [ "$(jq -r '.truncated' <<<"$listing")" = false ] || {
+            err "the parent tree of '$p' on $REF is truncated — list a narrower path"; exit 1; }
+          entry=$(jq -r --arg n "$base" '.tree[] | select(.path == $n) | [.type, .mode] | @tsv' <<<"$listing")
+          [ -n "$entry" ] || { err "'$p' does not exist on $REF"; exit 1; }
           IFS=$'\t' read -r type gitmode <<<"$entry"
+
           if [ "$type" = blob ]; then
             fetch_file "$p" "$gitmode"
             return
           fi
-          [ "$type" = tree ] || {
-            echo "::error::use-base-ci-tools: unsupported entry type '$type' at '$p' on $REF"; exit 1
-          }
-          # One recursive call for the whole subtree instead of a listing per
-          # directory. Paths come back subtree-relative.
-          listing=$(api_get "git/trees/$REF:$p?recursive=1")
-          [ "$(jq -r .truncated <<<"$listing")" = false ] || {
-            echo "::error::use-base-ci-tools: tree listing for '$p' on $REF was truncated — list files explicitly."
-            exit 1
-          }
+          [ "$type" = tree ] || { err "refusing unsupported entry type '$type' at '$p' on $REF"; exit 1; }
+
+          # One recursive call for the whole subtree. Paths come back
+          # subtree-relative. Submodules are type 'commit' and are dropped by
+          # the filter, so a subtree of nothing but submodules would otherwise
+          # complete with zero writes and still report success.
+          listing=$(api_get "git/trees/$(uri_seg "$REF"):$(uri_path "$p")?recursive=1") \
+            || { err "could not list the tree for '$p' on $REF"; exit 1; }
+          [ "$(jq -r '.truncated' <<<"$listing")" = false ] || {
+            err "the tree listing for '$p' on $REF is truncated — list files explicitly"; exit 1; }
+          rows=$(jq -r '.tree[] | select(.type == "blob") | [.mode, .path] | @tsv' <<<"$listing") \
+            || { err "could not parse the tree listing for '$p' on $REF"; exit 1; }
+          [ -n "$rows" ] || { err "'$p' on $REF contains no restorable files"; exit 1; }
           while IFS=$'\t' read -r bmode sub; do
+            [ -n "$sub" ] || continue
             fetch_file "$p/$sub" "$bmode"
-          done < <(jq -r '.tree[] | select(.type == "blob") | [.mode, .path] | @tsv' <<<"$listing")
+          done <<<"$rows"
         }
 
-        if git rev-parse --git-dir >/dev/null 2>&1; then
+        # ----------------------------------------------------- mode selection
+        # `[ -e .git ]`, not `git rev-parse --git-dir`: --git-dir walks UP, so
+        # in a workspace nested under another repo it answers "is there a repo
+        # above me" and would run git mode against the wrong tree.
+        if [ -e .git ]; then
+          command -v git >/dev/null 2>&1 \
+            || { err ".git is present but git is not installed"; exit 1; }
+          # A container that cannot read .git ('detected dubious ownership')
+          # must fail loudly here rather than fall through to API mode and
+          # restore into a tree git is not managing.
+          git rev-parse --is-inside-work-tree >/dev/null 2>&1 || {
+            err ".git is present but git refuses to read it. In a container this is usually 'detected dubious ownership' — run: git config --global --add safe.directory \"\$PWD\""
+            exit 1; }
           mode=git
           # --depth=1 on a NON-shallow repo writes .git/shallow, grafting the
-          # base tip as parentless and breaking every later `A...HEAD` diff
-          # ("no merge base"). The callers that check out fetch-depth: 0 do
-          # exactly that afterwards, so only ask for depth when the repo is
-          # already shallow — a plain fetch never un-shallows one.
+          # base tip as parentless and breaking every later `A...HEAD` diff with
+          # "no merge base". Callers that check out fetch-depth: 0 do exactly
+          # that afterwards, so only ask for depth when already shallow — a
+          # plain fetch never un-shallows one.
           depth=()
           [ "$(git rev-parse --is-shallow-repository)" = true ] && depth=(--depth=1)
-          git fetch --quiet --no-tags "${depth[@]}" origin "refs/heads/$REF"
+          # ${a[@]+"${a[@]}"} rather than "${a[@]}": an empty array under set -u
+          # is an unbound-variable error on bash <= 4.3.
+          git fetch --quiet --no-tags ${depth[@]+"${depth[@]}"} origin "refs/heads/$REF" \
+            || { err "could not fetch '$REF' from origin"; exit 1; }
         else
           # Container checkout without git falls back to a tarball — no .git to
-          # fetch into, so take the files from the contents API instead.
+          # fetch into, so take the files through the API instead.
           mode=api
-          command -v jq >/dev/null 2>&1 || {
-            echo "::error::use-base-ci-tools: this checkout has no .git, so paths resolve through the API — which needs jq to read the base ref's file modes. Install git or jq before this step."
-            exit 1
-          }
+          for tool in curl jq realpath; do
+            command -v "$tool" >/dev/null 2>&1 || {
+              err "this checkout has no .git, so paths resolve through the API — which needs '$tool'. Install git or '$tool' before this step."
+              exit 1; }
+          done
         fi
 
-        restored=0
+        # ------------------------------------------------------- the restores
+        # Read the list once so it can be validated before anything is written.
+        wanted=()
         while IFS= read -r p; do
           [ -z "$p" ] && continue
-          # Segment-wise traversal test: wrapping in slashes makes leading,
-          # interior and trailing '..' all reduce to '/../'. A plain *..*
-          # would also reject a legitimate 'scripts/v1..v2/gate.sh'.
           case "$p" in
-            /*) echo "::error::use-base-ci-tools: refusing absolute path '$p'"; exit 1 ;;
+            /*) err "refusing absolute path '$p'"; exit 1 ;;
           esac
+          # Segment-wise: wrapping in slashes makes leading, interior and
+          # trailing '..' all reduce to '/../'. A plain *..* would also reject a
+          # legitimate 'scripts/v1..v2/gate.sh'.
           case "/$p/" in
-            */../*) echo "::error::use-base-ci-tools: refusing traversing path '$p'"; exit 1 ;;
+            */../*) err "refusing traversing path '$p'"; exit 1 ;;
+            *//*)   err "refusing malformed path '$p' (empty segment)"; exit 1 ;;
           esac
-          if [ "$mode" = git ]; then
-            # restore, not checkout: `git checkout <tree> -- <path>` writes the
-            # index too, leaving a staged delta for any later git-using step to
-            # trip over. Same content and mode, fails closed the same way.
-            git restore --source=FETCH_HEAD --worktree -- "$p"
-          else
-            restore_api "$p"
-          fi
-          echo "using $REF copy: $p"
-          restored=$((restored + 1))
+          wanted+=("$p")
         done <<<"$PATHS"
 
         # An empty or mis-keyed `paths` would otherwise exit 0 having restored
         # nothing, with a green step implying the tools were protected.
-        if [ "$restored" -eq 0 ]; then
-          echo "::error::use-base-ci-tools: no paths restored — 'paths' was empty or missing."
-          exit 1
-        fi
+        [ "${#wanted[@]}" -gt 0 ] || {
+          err "no paths given — 'paths' was empty or missing."; exit 1; }
+
+        # If NOT ONE requested path is already in the tree, this step is not
+        # looking at the checkout: it ran before actions/checkout, or the job's
+        # working directory is not the repo root. Both otherwise succeed
+        # silently and protect nothing. Checking "at least one" rather than
+        # "every one" still allows the documented flow where a tool has landed
+        # on the base ref but the PR branch predates it.
+        present=0
+        for p in "${wanted[@]}"; do [ -e "$p" ] && present=$((present + 1)); done
+        [ "$present" -gt 0 ] || {
+          err "none of the requested paths exist in the working directory ($ROOT) — this step ran before actions/checkout, or against the wrong working directory."
+          exit 1; }
+
+        restored=0
+        for p in "${wanted[@]}"; do
+          if [ "$mode" = git ]; then
+            # Fail closed BEFORE writing: `git restore --source=<ref> --worktree`
+            # exits 0 and silently DELETES a path that exists on the head but
+            # not on the base ref, and for a directory it also removes tracked
+            # files the PR added under it. `git checkout <tree> --` errors on
+            # the former and preserves the latter, which is the documented
+            # contract. The explicit check is for the error message.
+            git cat-file -e "FETCH_HEAD:$p" 2>/dev/null \
+              || { err "'$p' does not exist on $REF"; exit 1; }
+            # The cost of checkout over restore: it writes the index as well as
+            # the worktree, so a later `git diff --cached` sees the swap while
+            # `git diff` stays clean. With restore it is the other way round.
+            # Neither is free once a tool has actually been replaced.
+            git checkout --quiet FETCH_HEAD -- "$p" \
+              || { err "failed to restore '$p' from $REF"; exit 1; }
+            restored=$((restored + 1))
+          else
+            restore_api "$p"
+          fi
+          echo "using $REF copy: $p"
+        done
+
+        # Backstop: `restored` counts files actually written, not paths
+        # attempted, so a directory that resolved to zero files cannot pass.
+        [ "$restored" -gt 0 ] || { err "nothing was restored."; exit 1; }
+        echo "use-base-ci-tools: restored ${#wanted[@]} path(s), $restored file(s), from $REF"

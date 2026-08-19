@@ -67,9 +67,46 @@ by SHA and never call it by local `./` path.
       scripts/coverage-gate.sh
 ```
 
-Paths are repo-relative and may be files or directories; `ref` defaults to
-`main`. It fails closed — on a path missing from the base ref, on an empty
-`paths`, and on anything that is not a regular file.
+### Pinning alone does not protect you
+
+On `pull_request`, GitHub runs the workflow file from the PR's own merge commit
+— a commit controlled by someone without write access to the base repository.
+So a PR can delete this step, edit its `paths:`, or append a later step that
+overwrites the files again. Pinning the *action* by SHA does not help, because
+the *call site* is PR-controlled.
+
+What binds is branch protection. Put the step inside a reusable workflow in
+this repo, call it `@<sha>`, and make that job a **required status check**: a
+required check that never reports stays pending and blocks the merge. The
+required check must be the job produced by the base-pinned workflow, and must
+not be satisfiable by a job the PR controls.
+
+### Inputs
+
+`paths` is a newline-separated list of repo-relative files or directories.
+Directories are restored recursively; files the PR added under one are left
+alone, tracked or not.
+
+`ref` defaults to `main` and is a fixed **trust root**, deliberately not
+`github.base_ref`. `base_ref` is chosen by the PR author, so a stacked PR could
+open a branch carrying a neutered gate and then target it, supplying its own
+judge. The cost is that a PR targeting `release/1.2` is judged by `main`'s
+tools unless the caller overrides `ref`.
+
+### Failure modes
+
+It fails closed on a path missing from the base ref; an empty `paths`; a mode
+that is not a regular file (symlinks and submodules are refused rather than
+written out); a path that escapes the workspace, including via a symlinked path
+component; a truncated or empty tree listing; and a working directory in which
+none of the requested paths exist — which means the step ran before
+`actions/checkout`, or against the wrong directory.
+
+`.github/workflows/use-base-ci-tools-test.yml` exercises all of this on every
+PR: git and API modes across files, directories, modes in both directions,
+shallow and full clones, the planted-symlink and planted-directory
+substitutions, and each guard above alongside a control path that must still
+succeed.
 
 ## Example usage
 
