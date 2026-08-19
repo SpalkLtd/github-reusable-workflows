@@ -44,6 +44,13 @@
 # that is truncated or yields no files, and a workspace where none of the
 # requested paths exist (which means the step ran before actions/checkout or
 # against the wrong working directory).
+#
+# Every one of those holds in BOTH modes. That is deliberate and worth keeping:
+# the two engines are easy to drift apart, and a guarantee that holds only on
+# the tarball path is worse than no guarantee, because the docs will claim it
+# everywhere. A symlink on the base ref is the example — git would restore it
+# faithfully if left alone, so git mode refuses it explicitly to match the API
+# path, which cannot represent one at all.
 name: Use base-branch CI tools
 description: Replace head-side copies of the given files or directories with the base branch's versions before anything executes them.
 
@@ -266,6 +273,16 @@ runs:
             # contract. The explicit check is for the error message.
             git cat-file -e "FETCH_HEAD:$p" 2>/dev/null \
               || { err "'$p' does not exist on $REF"; exit 1; }
+            # Refuse non-regular entries here too. git would restore a 120000
+            # faithfully, as a symlink — which is precisely the path-to-tool
+            # rebinding the API path refuses, and would leave the two modes
+            # disagreeing about the same tree. -r covers files nested under a
+            # restored directory, and reports submodules as 160000.
+            bad=$(git ls-tree -r FETCH_HEAD -- "$p" \
+              | awk '$1 != "100644" && $1 != "100755" { print $1" "$NF }')
+            [ -z "$bad" ] || {
+              err "refusing unsupported git mode under '$p' on $REF: $(echo "$bad" | tr '\n' ' ')"
+              exit 1; }
             # The cost of checkout over restore: it writes the index as well as
             # the worktree, so a later `git diff --cached` sees the swap while
             # `git diff` stays clean. With restore it is the other way round.

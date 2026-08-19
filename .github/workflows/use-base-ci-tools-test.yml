@@ -319,11 +319,21 @@ jobs:
         uses: ./use-base-ci-tools
         with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/not-on-base.sh' }
 
+      # git would restore a 120000 faithfully, as a symlink; the API path cannot
+      # represent one at all. Both must refuse, or the guarantee holds in only
+      # one engine while the docs claim it in both. This job runs git mode, so
+      # it is the side that needs pinning down.
       - name: 'symlink on the base ref (mode 120000)'
         id: symlink
         continue-on-error: true
         uses: ./use-base-ci-tools
         with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/symlink.txt' }
+
+      - name: 'symlink NESTED inside a restored directory'
+        id: nestedsymlink
+        continue-on-error: true
+        uses: ./use-base-ci-tools
+        with: { ref: '${{ github.head_ref || github.ref_name }}', paths: 'use-base-ci-tools/testdata/dir-with-symlink' }
 
       - name: 'control: a valid path must still succeed'
         id: control
@@ -339,6 +349,7 @@ jobs:
           EMPTYSEG: ${{ steps.emptyseg.outcome }}
           MISSING: ${{ steps.missing.outcome }}
           SYMLINK: ${{ steps.symlink.outcome }}
+          NESTEDSYMLINK: ${{ steps.nestedsymlink.outcome }}
           CONTROL: ${{ steps.control.outcome }}
         run: |
           set -euo pipefail
@@ -352,6 +363,7 @@ jobs:
           rejected "empty path segment" "$EMPTYSEG"
           rejected "missing on base"    "$MISSING"
           rejected "symlink on base"    "$SYMLINK"
+          rejected "symlink nested in a restored dir" "$NESTEDSYMLINK"
           # Without this the guards could pass simply by rejecting everything.
           [ "$CONTROL" = success ] && echo "  ok   control path accepted" \
             || { echo "::error::FAIL control path rejected (outcome=$CONTROL) — guards are over-broad"; fail=1; }
