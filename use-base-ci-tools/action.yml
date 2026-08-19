@@ -125,6 +125,11 @@ runs:
           # reads the PR's bits and re-applies them over base content, so a PR
           # could chmod 644 a script the base invokes as ./script and turn a
           # verdict into a swallowed "Permission denied".
+          #
+          # This is the API path having to do explicitly what git mode gets for
+          # free: `git checkout` applies the mode recorded in the base tree, so
+          # the same chmod-644 attempt is already undone there. Both modes end
+          # up at the base ref's mode; only this one has to be told.
           local p="$1" perms tmp
           case "$2" in
             100755) perms=755 ;;
