@@ -17,3 +17,4 @@
 - Add `cleanup-lambda.yml` reusable workflow for PR-scoped Lambda alias/version/ZIP cleanup.
 - Add optional `moving-alias-name` input to `deploy-lambda.yml` to create-or-update a re-pointable alias (e.g. `pr-42-head`) pointing at the just-published version.
 - Update `cleanup-lambda.yml` to delete aliases before versions and tolerate versions shared by multiple aliases.
+- Add `use-base-ci-tools` composite action to run CI verdict tools from the base branch
