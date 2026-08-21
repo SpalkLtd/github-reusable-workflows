@@ -15,6 +15,11 @@ name: Deploy Lambda
 on:
   workflow_call:
     inputs:
+      runner:
+        description: 'Runner label for this job. Defaults to a GitHub-hosted runner; pass a RunsOn label to run it on RunsOn instead.'
+        required: false
+        type: string
+        default: "ubuntu-latest"
       aws-role:
         description: "AWS IAM role to assume via OIDC"
         required: true
@@ -61,10 +66,17 @@ on:
 jobs:
   deploy-lambda:
     name: Deploy Lambda
-    runs-on: ubuntu-latest
+    runs-on: ${{ inputs.runner || 'ubuntu-latest' }}
     outputs:
       version: ${{ steps.publish.outputs.version }}
     steps:
+      # Required whenever the runner preset carries extras: [s3-cache]:
+      # the sidecar also fronts the results endpoint the artifact API
+      # posts to, and an unwired sidecar fails CreateArtifact. Guarded so
+      # callers passing a GitHub-hosted label are untouched.
+      - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
+        uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
+
       - name: Sanitize and validate alias name
         id: alias
         env:
