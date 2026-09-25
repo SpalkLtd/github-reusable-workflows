@@ -18,3 +18,4 @@
 - Add optional `moving-alias-name` input to `deploy-lambda.yml` to create-or-update a re-pointable alias (e.g. `pr-42-head`) pointing at the just-published version.
 - Update `cleanup-lambda.yml` to delete aliases before versions and tolerate versions shared by multiple aliases.
 - Add `use-base-ci-tools` composite action to run CI verdict tools from the base branch
+- Fix `cleanup-ecr-images.yml` destroying protected tags: delete only the PR-prefixed tags from a digest that also carries other tags, delete index tags before child tags, chunk at the 100-ID API cap, and fail the step on unexpected `BatchDeleteImage` failures.
