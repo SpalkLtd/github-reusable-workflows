@@ -163,14 +163,16 @@ jobs:
             # An ECR image is a digest and tags are labels on it, so deleting by
             # digest destroys every tag on that digest - including tags this PR
             # never pushed. Only a digest whose tags are *all* PR tags may be
-            # deleted by digest. A digest shared with latest/git_head/sha-*,
-            # which happens whenever a PR build is byte-identical to main's, has
-            # just its PR tags removed and keeps the rest.
+            # deleted by digest. A digest shared with latest/git_head/sha-* has
+            # just its PR tags removed and keeps the rest. Sharing is normal: a PR
+            # build identical to main's lands on main's digest, and promote-to-dev
+            # retags a PR image as latest outright.
             #
-            # `child` marks the per-architecture images behind a multi-arch
-            # index. The index has to be dealt with before the children it
-            # references or ECR answers ImageReferencedByManifestList, and AWS
-            # documents no ordering guarantee within a single batch.
+            # `child` marks a per-architecture entry behind a multi-arch index:
+            # a whole image in the digest case, a single tag in the tag case. The
+            # index has to be dealt with before the children it references or ECR
+            # answers ImageReferencedByManifestList, and AWS documents no ordering
+            # guarantee within a single batch.
             local plan
             plan=$(echo "$images" | jq -c --arg prefix "$pr_prefix" '
               [ .[]
@@ -191,12 +193,30 @@ jobs:
                   end
               ]')
 
-            echo "Cleanup plan for $repository ($region):"
-            echo "$plan" | jq -r 'if length == 0 then "  nothing matching the prefix" else (.[] | "  - " + .description) end'
+            local plan_size
+            plan_size=$(echo "$plan" | jq 'length')
+            if [ "$plan_size" -eq 0 ]; then
+              echo "No images matching prefix '$pr_prefix' found in $repository ($region). Nothing to clean up."
+              return 0
+            fi
 
-            # Index level first, then the per-architecture children it references.
-            delete_image_ids "$region" "$repository" "index" "$(echo "$plan" | jq -r '.[] | select(.child | not) | .id')"
-            delete_image_ids "$region" "$repository" "child" "$(echo "$plan" | jq -r '.[] | select(.child) | .id')"
+            echo "Cleanup plan for $repository ($region):"
+            echo "$plan" | jq -r '.[] | "  - " + .description'
+
+            # Index level first, then the child level. The split is the `child`
+            # flag above - a tag suffix - not a resolved manifest, so this orders
+            # the two levels against each other and never pairs an index with its
+            # own children.
+            #
+            # Assigned before use: the exit status of a command substitution passed
+            # straight as an argument is discarded, so a failing jq there would read
+            # as an empty delete list and pass silently.
+            local index_ids child_ids
+            index_ids=$(echo "$plan" | jq -r '.[] | select(.child | not) | .id')
+            child_ids=$(echo "$plan" | jq -r '.[] | select(.child) | .id')
+
+            delete_image_ids "$region" "$repository" "index" "$index_ids"
+            delete_image_ids "$region" "$repository" "child" "$child_ids"
           }
 
           # Main execution
