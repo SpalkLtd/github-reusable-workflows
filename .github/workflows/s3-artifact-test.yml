@@ -27,7 +27,6 @@ jobs:
   roundtrip:
     runs-on: ubuntu-latest
     env:
-      FAKE_S3: ${{ runner.temp }}/fake-s3
       ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:1/token?x=1
       ACTIONS_ID_TOKEN_REQUEST_TOKEN: stub
     steps:
@@ -36,6 +35,9 @@ jobs:
       - name: Install stubs
         run: |
           set -euo pipefail
+          # runner.temp is not available to job-level env, so export it here.
+          FAKE_S3="$RUNNER_TEMP/fake-s3"
+          echo "FAKE_S3=$FAKE_S3" >> "$GITHUB_ENV"
           mkdir -p "$RUNNER_TEMP/stubs" "$FAKE_S3"
           # The actions blank AWS_* and config files, so the stub finds the
           # fake bucket through a path baked in here, not the environment.
