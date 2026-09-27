@@ -18,3 +18,4 @@
 - Add optional `moving-alias-name` input to `deploy-lambda.yml` to create-or-update a re-pointable alias (e.g. `pr-42-head`) pointing at the just-published version.
 - Update `cleanup-lambda.yml` to delete aliases before versions and tolerate versions shared by multiple aliases.
 - Add `use-base-ci-tools` composite action to run CI verdict tools from the base branch
+- Add `s3-artifact/upload` and `s3-artifact/download` composite actions storing same-run artifacts in S3 via an OIDC-assumed role

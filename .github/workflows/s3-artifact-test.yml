@@ -1,0 +1,175 @@
+name: 'test: s3-artifact'
+
+# Self-test for the s3-artifact upload/download pair, referenced by `./` path
+# because the action IS the code under test (see use-base-ci-tools-test.yml).
+#
+# No AWS: a stub `aws` on PATH serves the handful of calls the actions make
+# from a local directory standing in for the bucket, and a stub OIDC endpoint
+# satisfies the token fetch. That exercises everything the actions own (path
+# matching, archive root, hidden-file handling, key layout, retention class,
+# attempt selection, pattern and merge-multiple) without a role this repo's
+# workflows could assume.
+on:
+  pull_request:
+    paths:
+      - 's3-artifact/**'
+      - '.github/workflows/s3-artifact-test.yml'
+  push:
+    branches: [main]
+    paths:
+      - 's3-artifact/**'
+      - '.github/workflows/s3-artifact-test.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  roundtrip:
+    runs-on: ubuntu-latest
+    env:
+      FAKE_S3: ${{ runner.temp }}/fake-s3
+      ACTIONS_ID_TOKEN_REQUEST_URL: http://127.0.0.1:1/token?x=1
+      ACTIONS_ID_TOKEN_REQUEST_TOKEN: stub
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install stubs
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/stubs" "$FAKE_S3"
+          # The actions blank AWS_* and config files, so the stub finds the
+          # fake bucket through a path baked in here, not the environment.
+          cat > "$RUNNER_TEMP/stubs/aws" <<EOF
+          #!/usr/bin/env bash
+          set -euo pipefail
+          root='$FAKE_S3'
+          EOF
+          cat >> "$RUNNER_TEMP/stubs/aws" <<'EOF'
+          arg() { local k=$1; shift; while [ $# -gt 0 ]; do [ "$1" = "$k" ] && { echo "$2"; return; }; shift; done; }
+          case "$1 $2" in
+            "sts assume-role-with-web-identity")
+              echo '{"AccessKeyId":"AKIASTUB","SecretAccessKey":"stubsecret","SessionToken":"stubtoken"}' ;;
+            "s3 cp")
+              src=$3 dst=$4
+              if [ "$src" = "-" ]; then f="$root/${dst#s3://*/}"; mkdir -p "$(dirname "$f")"; cat > "$f"
+              else cat "$root/${src#s3://*/}"; fi ;;
+            "s3api put-object-tagging")
+              k=$(arg --key "$@"); t=$(arg --tagging "$@"); echo "$t" > "$root/$k.tagging" ;;
+            "s3api head-object")
+              k=$(arg --key "$@"); stat -c %s "$root/$k" ;;
+            "s3api list-objects-v2")
+              p=$(arg --prefix "$@")
+              (cd "$root" && find . -type f -name '*.tar' | sed 's|^\./||' | grep "^$p" || true) | jq -R . | jq -s . ;;
+            *) echo "stub aws: unexpected call: $*" >&2; exit 1 ;;
+          esac
+          EOF
+          cat > "$RUNNER_TEMP/stubs/curl" <<'EOF'
+          #!/usr/bin/env bash
+          echo '{"value":"stub-jwt"}'
+          EOF
+          chmod +x "$RUNNER_TEMP/stubs/"*
+          echo "$RUNNER_TEMP/stubs" >> "$GITHUB_PATH"
+
+      - name: Fixtures
+        run: |
+          set -euo pipefail
+          mkdir -p fx/build/static/js fx/build/.cache fx/scratch
+          echo index > fx/build/index.html
+          echo app > fx/build/static/js/app.js
+          echo hidden > fx/build/.env
+          echo cache > fx/build/.cache/blob
+          echo s1 > fx/scratch/stall_1.prof
+          echo c1 > fx/scratch/core-1
+          echo other > fx/scratch/replay-output.ts
+          mkdir -p "fx/with space"; echo spaced > "fx/with space/a b.txt"
+
+      # A single directory uploads its contents, hidden files excluded.
+      - uses: ./s3-artifact/upload
+        with:
+          name: build
+          path: fx/build/
+          retention-days: 3
+
+      # Two globs in one directory: root is that directory.
+      - uses: ./s3-artifact/upload
+        with:
+          name: diag
+          path: |
+            fx/scratch/stall_*
+            fx/scratch/core-*
+
+      - uses: ./s3-artifact/upload
+        with:
+          name: spaced
+          path: fx/with space/a b.txt
+
+      - uses: ./s3-artifact/upload
+        with:
+          name: hidden
+          path: fx/build/
+          include-hidden-files: true
+
+      - uses: ./s3-artifact/upload
+        with:
+          name: nothing
+          path: fx/does-not-exist/*
+
+      - name: Stale earlier attempt must lose to the current one
+        run: |
+          set -euo pipefail
+          base="$FAKE_S3/$GITHUB_REPOSITORY/$GITHUB_RUN_ID"
+          # The fake bucket is per-job, so whatever attempt this is, the real
+          # uploads sit under it alone. Move them to attempt 3 and plant a
+          # stale attempt 2 whose diag.tar holds different content.
+          mv "$base/$GITHUB_RUN_ATTEMPT" "$base/3.tmp" && mv "$base/3.tmp" "$base/3"
+          mkdir -p "$base/2" && tar -cf "$base/2/diag.tar" -C fx/build index.html
+
+      - uses: ./s3-artifact/download
+        with:
+          name: build
+          path: out/build
+
+      - uses: ./s3-artifact/download
+        with:
+          pattern: 'd*'
+          path: out/pattern
+
+      - uses: ./s3-artifact/download
+        with:
+          pattern: '*'
+          path: out/merged
+          merge-multiple: true
+
+      - uses: ./s3-artifact/download
+        with:
+          name: hidden
+          path: out/hidden
+
+      - name: Assert
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          # Exact file sets: each listing states everything that must be
+          # there, so a hidden file leaking in or a stale attempt winning
+          # shows up as a mismatch.
+          files() { (cd "$1" && find . -type f | sed 's|^\./||' | LC_ALL=C sort | paste -sd ' '); }
+          same() { [ "$(files "$1")" = "$2" ] || fail "$1: expected [$2], got [$(files "$1")]"; }
+          eq() { [ "$(cat "$1")" = "$2" ] || fail "$1: expected '$2', got '$(cat "$1")'"; }
+
+          same out/build "index.html static/js/app.js"
+          eq out/build/static/js/app.js app
+
+          # diag/ holds attempt 3's files, not the stale attempt 2 archive.
+          same out/pattern "diag/core-1 diag/stall_1.prof"
+          eq out/pattern/diag/stall_1.prof s1
+
+          same out/merged ".cache/blob .env a b.txt core-1 index.html stall_1.prof static/js/app.js"
+          eq "out/merged/a b.txt" spaced
+
+          same out/hidden ".cache/blob .env index.html static/js/app.js"
+
+          run="$FAKE_S3/$GITHUB_REPOSITORY/$GITHUB_RUN_ID"
+          same "$run" "2/diag.tar 3/build.tar 3/build.tar.tagging 3/diag.tar 3/diag.tar.tagging 3/hidden.tar 3/hidden.tar.tagging 3/spaced.tar 3/spaced.tar.tagging"
+          eq "$run/3/build.tar.tagging" "TagSet=[{Key=retention-days,Value=7}]"
+          eq "$run/3/diag.tar.tagging" "TagSet=[{Key=retention-days,Value=7}]"
+          echo "all assertions passed"

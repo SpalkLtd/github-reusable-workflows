@@ -1,0 +1,174 @@
+# Stores a workflow artifact in S3 instead of GitHub's artifact storage, which
+# counts against the org's shared Actions storage quota. The download half is
+# s3-artifact/download; together they cover the same-run producer/consumer
+# handoff that actions/upload-artifact + download-artifact are used for.
+#
+#   uses: SpalkLtd/github-reusable-workflows/s3-artifact/upload@<sha>
+#
+# Pin by SHA. This repo is out of reach of the PRs that call it, so the pin is
+# the trust root for the code that handles the artifact role's credentials.
+#
+# CREDENTIALS. The step assumes the artifact role itself from the job's OIDC
+# token (the job needs `id-token: write`). The credentials live only in this
+# step's shell: nothing goes to $GITHUB_ENV, so a job that already assumed a
+# deploy role keeps it for its later steps, and no later step inherits access
+# to the artifact bucket. Inherited AWS_* variables and CLI config files are
+# ignored so an earlier step cannot redirect the upload to other credentials.
+#
+# LAYOUT. One uncompressed tar per artifact at
+#   s3://<bucket>/<owner>/<repo>/<run_id>/<run_attempt>/<name>.tar
+# tagged retention-days=<class>. Bucket lifecycle rules expire each class, so
+# retention-days is rounded UP to the next of 1, 7, 14, 30, 90. Uncompressed
+# because our big artifacts (MPEG-TS captures, minified bundles already served
+# gzipped) gain little from compression and it would cost CPU on every run.
+#
+# PATH SEMANTICS follow actions/upload-artifact: newline-separated files,
+# directories or globs (globstar on); the archive root is the least common
+# ancestor of the matches, so a single directory uploads its contents; hidden
+# files are excluded unless include-hidden-files is true. `!` exclusions are
+# not supported and fail the step rather than being silently ignored.
+name: Upload artifact to S3
+description: Upload files as a same-run artifact stored in S3, assuming the artifact IAM role via OIDC.
+
+inputs:
+  name:
+    description: Artifact name. Letters, digits, dot, underscore and hyphen only.
+    required: false
+    default: artifact
+  path:
+    description: Newline-separated files, directories or globs to upload.
+    required: true
+  if-no-files-found:
+    description: warn, error or ignore when nothing matches `path`.
+    required: false
+    default: warn
+  retention-days:
+    description: Days to keep the artifact, rounded up to 1, 7, 14, 30 or 90.
+    required: false
+    default: '7'
+  include-hidden-files:
+    description: Include files and directories whose name starts with a dot.
+    required: false
+    default: 'false'
+  role-to-assume:
+    description: IAM role the step assumes for the artifact bucket.
+    required: false
+    default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_role_mr
+  bucket:
+    description: Artifact bucket.
+    required: false
+    default: spalk-bifrost-gha-artifacts
+  aws-region:
+    description: Region of the artifact bucket.
+    required: false
+    default: us-east-2
+
+runs:
+  using: composite
+  steps:
+    - name: Upload artifact to S3
+      shell: bash
+      env:
+        NAME: ${{ inputs.name }}
+        PATHS: ${{ inputs.path }}
+        IF_NO_FILES: ${{ inputs.if-no-files-found }}
+        RETENTION: ${{ inputs.retention-days }}
+        INCLUDE_HIDDEN: ${{ inputs.include-hidden-files }}
+        ROLE: ${{ inputs.role-to-assume }}
+        BUCKET: ${{ inputs.bucket }}
+        REGION: ${{ inputs.aws-region }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -euo pipefail
+        err() { echo "::error::s3-artifact/upload: $*"; exit 1; }
+
+        [[ "$NAME" =~ ^[A-Za-z0-9._-]+$ && "$NAME" != .* ]] \
+          || err "name '$NAME' must be letters, digits, '.', '_' or '-' and not start with '.'"
+        case "$IF_NO_FILES" in warn|error|ignore) ;; *) err "if-no-files-found must be warn, error or ignore";; esac
+        [[ "$RETENTION" =~ ^[0-9]+$ && "$RETENTION" -ge 1 ]] || err "retention-days must be a positive integer"
+        class=90
+        for c in 1 7 14 30 90; do if [ "$RETENTION" -le "$c" ]; then class=$c; break; fi; done
+
+        # ------------------------------------------------------------ match
+        shopt -s globstar nullglob
+        [ "$INCLUDE_HIDDEN" = "true" ] && shopt -s dotglob
+        matches=()
+        while IFS= read -r pattern || [ -n "$pattern" ]; do
+          pattern="${pattern#"${pattern%%[![:space:]]*}"}"; pattern="${pattern%"${pattern##*[![:space:]]}"}"
+          [ -z "$pattern" ] && continue
+          [[ "$pattern" == '!'* ]] && err "'!' exclusions are not supported: $pattern"
+          pattern="${pattern/#\~/$HOME}"
+          # Empty IFS: the unquoted expansion globs but does not word-split,
+          # so a path containing spaces stays one path.
+          IFS= ; for m in $pattern; do [ -e "$m" ] && matches+=("$(realpath -s "$m")"); done; unset IFS
+        done <<< "$PATHS"
+
+        if [ "${#matches[@]}" -eq 0 ]; then
+          msg="no files found for artifact '$NAME'"
+          case "$IF_NO_FILES" in
+            error) err "$msg" ;;
+            warn) echo "::warning::s3-artifact/upload: $msg"; exit 0 ;;
+            ignore) echo "$msg"; exit 0 ;;
+          esac
+        fi
+
+        # Archive root = least common ancestor, as upload-artifact does: a
+        # directory counts as itself, a file as its parent.
+        lca=""
+        for m in "${matches[@]}"; do
+          d="$m"; [ -d "$d" ] || d="$(dirname "$d")"
+          if [ -z "$lca" ]; then lca="$d"; continue; fi
+          while [ "$lca" != "/" ] && [[ "$d/" != "$lca/"* ]]; do lca="$(dirname "$lca")"; done
+        done
+
+        members=$(mktemp)
+        for m in "${matches[@]}"; do
+          rel="${m#"$lca"}"; rel="${rel#/}"
+          printf '%s\0' "${rel:-.}"
+        done > "$members"
+
+        tar_excl=()
+        # Unanchored, so it matches any path component; '.?*' needs two
+        # characters so the '.' member of a single-directory upload survives.
+        [ "$INCLUDE_HIDDEN" = "true" ] || tar_excl=(--exclude='.?*')
+
+        # ------------------------------------------------------ credentials
+        [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || err "no OIDC token available; grant the job 'id-token: write'"
+        # -q first: it is positional, and without it curl honours ~/.curlrc.
+        jwt=$(curl -q -fsSL --retry 3 --max-time 60 \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+        echo "::add-mask::$jwt"
+
+        # A clean AWS environment: no inherited keys, profiles or config
+        # files, so earlier steps cannot steer which identity this uses.
+        unset "${!AWS_@}"
+        export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
+        export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" AWS_EC2_METADATA_DISABLED=true
+
+        creds=$(aws sts assume-role-with-web-identity --no-sign-request \
+          --role-arn "$ROLE" --role-session-name "artifact-$RUN_ID-$RUN_ATTEMPT" \
+          --web-identity-token "$jwt" --duration-seconds 3600 \
+          --query Credentials --output json)
+        AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<< "$creds")
+        AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<< "$creds")
+        AWS_SESSION_TOKEN=$(jq -r .SessionToken <<< "$creds")
+        echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+        echo "::add-mask::$AWS_SESSION_TOKEN"
+        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+        unset creds jwt
+
+        # ----------------------------------------------------------- upload
+        key="$REPO/$RUN_ID/$RUN_ATTEMPT/$NAME.tar"
+        tar -cf - -C "$lca" "${tar_excl[@]}" --null -T "$members" \
+          | aws s3 cp - "s3://$BUCKET/$key" --only-show-errors
+        # Tagged after the upload because `aws s3 cp` cannot tag a streamed
+        # multipart upload. Lifecycle runs daily, so the untagged window is
+        # harmless; the bucket's catch-all rule covers a failed tagging call.
+        aws s3api put-object-tagging --bucket "$BUCKET" --key "$key" \
+          --tagging "TagSet=[{Key=retention-days,Value=$class}]"
+
+        size=$(aws s3api head-object --bucket "$BUCKET" --key "$key" --query ContentLength --output text)
+        echo "Uploaded artifact '$NAME' (${#matches[@]} path(s) under $lca, $size bytes) to s3://$BUCKET/$key, retention ${class}d"
