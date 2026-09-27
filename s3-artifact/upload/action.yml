@@ -130,9 +130,10 @@ runs:
         done > "$members"
 
         tar_excl=()
-        # Unanchored, so it matches any path component; '.?*' needs two
-        # characters so the '.' member of a single-directory upload survives.
-        [ "$INCLUDE_HIDDEN" = "true" ] || tar_excl=(--exclude='.?*')
+        # Unanchored, so it matches any path component. Exclusion wildcards
+        # match '/' by default, which would let '.?*' swallow './index.html';
+        # '.?*' needs two characters so the '.' member itself survives.
+        [ "$INCLUDE_HIDDEN" = "true" ] || tar_excl=(--no-wildcards-match-slash --exclude='.?*')
 
         # ------------------------------------------------------ credentials
         [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || err "no OIDC token available; grant the job 'id-token: write'"
