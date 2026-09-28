@@ -29,7 +29,7 @@ on:
         type: string
         default: "main"
       artifact-name:
-        description: "Name for the binary handed to deploy-lambda.yml; keys its Actions cache entry (must be unique within the workflow run)"
+        description: "Name for the binary handed to deploy-lambda.yml; names its S3 handoff object (must be unique within the workflow run)"
         required: true
         type: string
       goarch:
@@ -53,8 +53,14 @@ on:
         required: false
     outputs:
       artifact-name:
-        description: "Name of the uploaded artifact containing the Lambda binary"
+        description: "artifact-name, passed through"
         value: ${{ jobs.build-lambda.outputs.artifact-name }}
+      binary-key:
+        description: "S3 key of the binary; pass to deploy-lambda.yml's binary-key"
+        value: ${{ jobs.build-lambda.outputs.binary-key }}
+      binary-sha256:
+        description: "sha256 of the binary; pass to deploy-lambda.yml's binary-sha256"
+        value: ${{ jobs.build-lambda.outputs.binary-sha256 }}
 
 jobs:
   build-lambda:
@@ -62,6 +68,8 @@ jobs:
     runs-on: ${{ inputs.runner }}
     outputs:
       artifact-name: ${{ inputs.artifact-name }}
+      binary-key: ${{ steps.handoff.outputs.key }}
+      binary-sha256: ${{ steps.handoff.outputs.sha256 }}
     env:
       GOPRIVATE: "github.com/SpalkLtd/*"
     steps:
@@ -103,9 +111,19 @@ jobs:
         run: |
           go build -ldflags="-s -w" -o /tmp/${{ inputs.binary-name }} ${{ inputs.build-dir }}
 
-      # deploy-lambda.yml must be pinned to the same commit.
-      - name: Save binary
-        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/${{ inputs.binary-name }}
-          key: ${{ inputs.artifact-name }}-${{ github.run_id }}
+      # One object in the RunsOn cache bucket, under this run and attempt. Any job
+      # on the stack can overwrite it, so the consumer trusts the sha256 output
+      # (job outputs are run-scoped), not the object. The instance role writes it:
+      # credentials an earlier step exported are dropped for this command only.
+      - name: Hand binary to the next job
+        id: handoff
+        env:
+          KEY_SUFFIX: handoff/${{ github.run_id }}/${{ github.run_attempt }}/${{ inputs.artifact-name }}
+        run: |
+          : "${RUNS_ON_S3_BUCKET_CACHE:?handoff needs a RunsOn runner with the s3-cache extra}"
+          KEY="${RUNS_ON_S3_CACHE_REPO_PREFIX:?handoff needs a RunsOn runner with the s3-cache extra}/$KEY_SUFFIX"
+          sha=$(sha256sum "/tmp/${{ inputs.binary-name }}" | cut -d' ' -f1)
+          env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_PROFILE \
+            aws s3 cp --only-show-errors --region "$RUNS_ON_AWS_REGION" "/tmp/${{ inputs.binary-name }}" "s3://$RUNS_ON_S3_BUCKET_CACHE/$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"

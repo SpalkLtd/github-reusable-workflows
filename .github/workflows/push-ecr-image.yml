@@ -1,4 +1,5 @@
-# This workflow downloads a pre-built Docker image artifact and pushes it to Amazon ECR.
+# This workflow fetches a pre-built Docker image tarball (from build-ecr-image.yml),
+# verifies it against the build job's sha256, and pushes it to Amazon ECR.
 # It does NOT check out caller repo code, does NOT have SSH keys, and does NOT execute any Dockerfile.
 # This separation ensures that AWS credentials are never available during code execution.
 #
@@ -11,7 +12,7 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: 'Runner label for this job. Defaults to a GitHub-hosted runner; pass a RunsOn label to run it on RunsOn instead.'
+        description: 'Runner label for this job. Must be a RunsOn label with the s3-cache extra: the handoff fetch needs the RunsOn cache bucket.'
         required: false
         type: string
         default: "ubuntu-latest"
@@ -31,8 +32,12 @@ on:
         description: "Tag for the Docker image in ECR"
         required: true
         type: string
-      artifact-name:
-        description: "artifact-name given to build-ecr-image.yml (pinned to the same commit); keys the image tarball's Actions cache entry"
+      tarball-key:
+        description: "build-ecr-image.yml's tarball-key output (pinned to the same commit)"
+        required: true
+        type: string
+      tarball-sha256:
+        description: "build-ecr-image.yml's tarball-sha256 output; the fetched tarball must match it"
         required: true
         type: string
       media-region-repository-name:
@@ -56,9 +61,23 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      # Guarded so callers passing a GitHub-hosted label are untouched.
       - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
         uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
+
+      # Copies exactly one object and checks it against the build job's hash
+      # before anything reads it, and before this job holds its AWS role: a
+      # tampered or missing object only fails here.
+      - name: Fetch and verify image tarball
+        env:
+          KEY: ${{ inputs.tarball-key }}
+          EXPECTED: ${{ inputs.tarball-sha256 }}
+        run: |
+          : "${RUNS_ON_S3_BUCKET_CACHE:?handoff needs a RunsOn runner with the s3-cache extra}"
+          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::tarball-sha256 is missing or not a sha256"; exit 1; }
+          f="$RUNNER_TEMP/handoff"
+          aws s3 cp --only-show-errors --region "$RUNS_ON_AWS_REGION" "s3://$RUNS_ON_S3_BUCKET_CACHE/$KEY" "$f"
+          echo "$EXPECTED  $f" | sha256sum -c -
+          zstd -d "$f" -o /tmp/image.tar
 
       - name: Validate tag
         run: |
@@ -84,16 +103,6 @@ jobs:
         run: |
           crane auth login 496668274218.dkr.ecr.${{ inputs.aws-region }}.amazonaws.com \
             -u AWS -p "$(aws ecr get-login-password --region ${{ inputs.aws-region }})"
-
-      - name: Restore image tarball
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/image.tar.zst
-          key: ${{ inputs.artifact-name }}-${{ github.run_id }}
-          fail-on-cache-miss: true
-
-      - name: Decompress image tarball
-        run: zstd -d /tmp/image.tar.zst -o /tmp/image.tar
 
       - name: Push image to ECR
         id: push
