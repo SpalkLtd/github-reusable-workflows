@@ -12,7 +12,7 @@ Reusable GitHub Workflows for the Spalk Organisation.
 | `push-ecr-image.yml`             | Push artifact to ECR                            | ECR push                 | No            |
 | `create-multi-arch-manifest.yml` | Create multi-arch manifest from per-arch images | ECR push                 | No            |
 | `promote-to-dev.yml`             | Retag image as `:latest` in dev                 | ECR push (dev only)      | No            |
-| `cleanup-ecr-images.yml`         | Delete PR images from ECR                       | ECR delete               | No            |
+| `cleanup-ecr-images.yml`         | Delete a closed PR's images and tags from ECR   | ECR delete               | No            |
 
 ### Lambda workflows (Go Lambda functions)
 
@@ -32,6 +32,8 @@ The Lambda workflows enforce **artefact/activation separation**: `deploy-lambda.
 - `function-names` (required) — JSON array of Lambda function names (e.g. `["fn-a", "fn-b"]`).
 - `alias-prefix` (required) — prefix for aliases to delete (e.g. `pr-42-`). Must not match `current`.
 - `lambda-binaries-bucket` (optional) — when set, also deletes `lambda_${alias-prefix}*.zip` objects from this bucket. When unset, no S3 cleanup is performed.
+
+`cleanup-ecr-images.yml` tears down the images a PR's preview builds pushed, matched by a `tag-prefix` such as `pr-42-`. An ECR image is a digest and tags are only labels on it, so deleting by digest destroys every tag on that digest: a digest is therefore deleted outright only when **all** of its tags belong to the PR, and one that also carries `latest`, `git_head` or a `sha-*` tag has just its PR tags removed and survives. Digests are routinely shared — a PR build identical to main's lands on main's digest, and `promote-to-dev.yml` retags a PR image as `:latest` outright. It also refuses a `tag-prefix` that would match the protected `current`, `latest` or `commentator_test_current` tags, deletes multi-arch index tags before the per-architecture children they reference, and fails the step when `BatchDeleteImage` reports anything other than `ImageNotFound`.
 
 ### Other workflows
 

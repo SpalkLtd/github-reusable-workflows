@@ -73,6 +73,77 @@ jobs:
           MEDIA_REGION_REPOSITORY_NAME: ${{ inputs.media-region-repository-name }}
           MEDIA_REGIONS: ${{ inputs.media-regions }}
         run: |
+          set -euo pipefail
+
+          # BatchDeleteImage accepts at most 100 image IDs per call.
+          MAX_IDS_PER_CALL=100
+
+          # Issue one batch-delete-image call and fail the step if ECR reports a
+          # problem. BatchDeleteImage answers HTTP 200 with a `failures` array
+          # rather than a non-zero exit code, so the body has to be inspected or
+          # a failed cleanup looks like a successful one.
+          delete_chunk() {
+            local region=$1
+            local repository=$2
+            local label=$3
+            shift 3
+
+            echo "Deleting $# $label image ID(s) from $repository ($region):"
+            printf '  %s\n' "$@"
+
+            local response
+            if ! response=$(aws ecr batch-delete-image \
+              --repository-name "$repository" \
+              --region "$region" \
+              --image-ids "$@" \
+              --output json); then
+              echo "::error::batch-delete-image call failed for $repository ($region)."
+              exit 1
+            fi
+
+            local tolerated fatal
+            tolerated=$(echo "$response" | jq -c '[.failures[]? | select(.failureCode == "ImageNotFound")]')
+            fatal=$(echo "$response" | jq -c '[.failures[]? | select(.failureCode != "ImageNotFound")]')
+
+            if [ "$tolerated" != "[]" ]; then
+              echo "::notice::Ignoring ImageNotFound failures in $repository ($region): $tolerated"
+            fi
+            if [ "$fatal" != "[]" ]; then
+              echo "::error::batch-delete-image reported failures in $repository ($region): $fatal"
+              exit 1
+            fi
+          }
+
+          # Delete a newline-separated list of image IDs, chunked to the API cap.
+          delete_image_ids() {
+            local region=$1
+            local repository=$2
+            local label=$3
+            local ids_text=$4
+
+            if [ -z "$ids_text" ]; then
+              echo "Nothing to delete at the $label level in $repository ($region)."
+              return 0
+            fi
+
+            local chunk=()
+            local id
+            while IFS= read -r id; do
+              if [ -z "$id" ]; then
+                continue
+              fi
+              chunk+=("$id")
+              if [ "${#chunk[@]}" -eq "$MAX_IDS_PER_CALL" ]; then
+                delete_chunk "$region" "$repository" "$label" "${chunk[@]}"
+                chunk=()
+              fi
+            done <<< "$ids_text"
+
+            if [ "${#chunk[@]}" -gt 0 ]; then
+              delete_chunk "$region" "$repository" "$label" "${chunk[@]}"
+            fi
+          }
+
           # Function to clean up PR images in a specific repository and region
           cleanup_pr_images() {
             local region=$1
@@ -81,28 +152,71 @@ jobs:
 
             echo "Processing repository: $repository in region: $region"
 
-            digests=$(aws ecr describe-images \
+            local images
+            images=$(aws ecr describe-images \
               --repository-name "$repository" \
               --region "$region" \
               --filter "tagStatus=TAGGED" \
-              --query "imageDetails[?contains(to_string(imageTags), \`$pr_prefix\`) == \`true\`].[imageDigest]" \
-              --output text)
+              --query "imageDetails[].{digest:imageDigest,tags:imageTags}" \
+              --output json)
 
-            if [ -z "$digests" ]; then
+            # An ECR image is a digest and tags are labels on it, so deleting by
+            # digest destroys every tag on that digest - including tags this PR
+            # never pushed. Only a digest whose tags are *all* PR tags may be
+            # deleted by digest. A digest shared with latest/git_head/sha-* has
+            # just its PR tags removed and keeps the rest. Sharing is normal: a PR
+            # build identical to main's lands on main's digest, and promote-to-dev
+            # retags a PR image as latest outright.
+            #
+            # `child` marks a per-architecture entry behind a multi-arch index:
+            # a whole image in the digest case, a single tag in the tag case. The
+            # index has to be dealt with before the children it references or ECR
+            # answers ImageReferencedByManifestList, and AWS documents no ordering
+            # guarantee within a single batch.
+            local plan
+            plan=$(echo "$images" | jq -c --arg prefix "$pr_prefix" '
+              [ .[]
+                | . as $image
+                | ($image.tags // []) as $tags
+                | ($tags | map(select(startswith($prefix)))) as $pr_tags
+                | select(($pr_tags | length) > 0)
+                | if ($pr_tags | length) == ($tags | length)
+                  then
+                    { id: ("imageDigest=" + $image.digest),
+                      child: all($pr_tags[]; test("-(amd64|arm64)$")),
+                      description: ("digest " + $image.digest + " [" + ($tags | join(", ")) + "] - PR tags only, deleting the image") }
+                  else
+                    ( $pr_tags[]
+                      | { id: ("imageTag=" + .),
+                          child: test("-(amd64|arm64)$"),
+                          description: ("tag " + . + " on digest " + $image.digest + " - keeping [" + (($tags - $pr_tags) | join(", ")) + "]") } )
+                  end
+              ]')
+
+            local plan_size
+            plan_size=$(echo "$plan" | jq 'length')
+            if [ "$plan_size" -eq 0 ]; then
               echo "No images matching prefix '$pr_prefix' found in $repository ($region). Nothing to clean up."
               return 0
             fi
 
-            image_ids=""
-            for digest in $digests; do
-              image_ids+="imageDigest=$digest "
-            done
+            echo "Cleanup plan for $repository ($region):"
+            echo "$plan" | jq -r '.[] | "  - " + .description'
 
-            echo "Deleting images: \n$digests\n"
-            aws ecr batch-delete-image \
-              --repository-name "$repository" \
-              --region "$region" \
-              --image-ids $image_ids
+            # Index level first, then the child level. The split is the `child`
+            # flag above - a tag suffix - not a resolved manifest, so this orders
+            # the two levels against each other and never pairs an index with its
+            # own children.
+            #
+            # Assigned before use: the exit status of a command substitution passed
+            # straight as an argument is discarded, so a failing jq there would read
+            # as an empty delete list and pass silently.
+            local index_ids child_ids
+            index_ids=$(echo "$plan" | jq -r '.[] | select(.child | not) | .id')
+            child_ids=$(echo "$plan" | jq -r '.[] | select(.child) | .id')
+
+            delete_image_ids "$region" "$repository" "index" "$index_ids"
+            delete_image_ids "$region" "$repository" "child" "$child_ids"
           }
 
           # Main execution
