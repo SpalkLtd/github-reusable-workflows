@@ -1,0 +1,85 @@
+# Deletes this workflow run's s3-artifact objects, for a final job once every
+# consumer has finished. Put it behind `if: success()` so a failed run keeps
+# its artifacts for a re-run of the failed jobs; the bucket's lifecycle rules
+# expire those.
+#
+#   uses: SpalkLtd/github-reusable-workflows/s3-artifact/delete@<sha>
+#
+# See s3-artifact/upload for the layout and the credential model; this step
+# assumes the same role the same way and keeps the credentials in its own shell.
+name: Delete artifacts from S3
+description: Delete this run's artifacts stored in S3 by s3-artifact/upload, assuming the artifact IAM role via OIDC.
+
+inputs:
+  pattern:
+    description: Shell glob matching the artifact names to delete; every artifact of this run by default.
+    required: false
+    default: '*'
+  role-to-assume:
+    description: IAM role assumed by runs on any ref other than refs/heads/main.
+    required: false
+    default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_role_mr
+  main-role-to-assume:
+    description: IAM role assumed by runs on refs/heads/main.
+    required: false
+    default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_main_role_mr
+  bucket:
+    description: Artifact bucket.
+    required: false
+    default: spalk-bifrost-gha-artifacts
+  aws-region:
+    description: Region of the artifact bucket.
+    required: false
+    default: us-east-2
+
+runs:
+  using: composite
+  steps:
+    - name: Delete artifacts from S3
+      shell: bash
+      env:
+        PATTERN: ${{ inputs.pattern }}
+        ROLE: ${{ inputs.role-to-assume }}
+        MAIN_ROLE: ${{ inputs.main-role-to-assume }}
+        REF: ${{ github.ref }}
+        BUCKET: ${{ inputs.bucket }}
+        REGION: ${{ inputs.aws-region }}
+        REPO: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
+      run: |
+        set -euo pipefail
+        err() { echo "::error::s3-artifact/delete: $*"; exit 1; }
+
+        # ------------------------------------------------------ credentials
+        [ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || err "no OIDC token available; grant the job 'id-token: write'"
+        # -q first: it is positional, and without it curl honours ~/.curlrc.
+        jwt=$(curl -q -fsSL --retry 3 --max-time 60 \
+          -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+          "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=sts.amazonaws.com" | jq -r '.value')
+        echo "::add-mask::$jwt"
+
+        # A clean AWS environment: no inherited keys, profiles or config
+        # files, so earlier steps cannot steer which identity this uses.
+        unset "${!AWS_@}"
+        export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
+        export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" AWS_EC2_METADATA_DISABLED=true
+
+        [ "$REF" = "refs/heads/main" ] && ROLE="$MAIN_ROLE"
+        creds=$(aws sts assume-role-with-web-identity --no-sign-request \
+          --role-arn "$ROLE" --role-session-name "artifact-$RUN_ID-$RUN_ATTEMPT" \
+          --web-identity-token "$jwt" --duration-seconds 900 \
+          --query Credentials --output json)
+        AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<< "$creds")
+        AWS_SECRET_ACCESS_KEY=$(jq -r .SecretAccessKey <<< "$creds")
+        AWS_SESSION_TOKEN=$(jq -r .SessionToken <<< "$creds")
+        echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
+        echo "::add-mask::$AWS_SESSION_TOKEN"
+        export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN
+        unset creds jwt
+
+        # ----------------------------------------------------------- delete
+        # Every attempt of this run: <repo>/<ref>/<run_id>/<attempt>/<name>.tar
+        aws s3 rm "s3://$BUCKET/$REPO/$REF/$RUN_ID/" --recursive --only-show-errors \
+          --exclude '*' --include "*/$PATTERN.tar"
+        echo "Deleted this run's artifacts matching the pattern from s3://$BUCKET/$REPO/$REF/$RUN_ID/"
