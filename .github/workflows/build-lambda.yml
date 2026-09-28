@@ -29,7 +29,7 @@ on:
         type: string
         default: "main"
       artifact-name:
-        description: "Name for the uploaded artifact (must be unique within the workflow run)"
+        description: "Name for the binary handed to deploy-lambda.yml; keys its Actions cache entry (must be unique within the workflow run)"
         required: true
         type: string
       goarch:
@@ -65,6 +65,9 @@ jobs:
     env:
       GOPRIVATE: "github.com/SpalkLtd/*"
     steps:
+      - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
+        uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
+
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
@@ -100,10 +103,9 @@ jobs:
         run: |
           go build -ldflags="-s -w" -o /tmp/${{ inputs.binary-name }} ${{ inputs.build-dir }}
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v7.0.1
+      # deploy-lambda.yml must be pinned to the same commit.
+      - name: Save binary
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ${{ inputs.artifact-name }}
           path: /tmp/${{ inputs.binary-name }}
-          retention-days: 1
-          if-no-files-found: error
+          key: ${{ inputs.artifact-name }}-${{ github.run_id }}
