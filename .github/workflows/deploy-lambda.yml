@@ -29,11 +29,11 @@ on:
         required: true
         type: string
       artifact-name:
-        description: "Name of the artifact containing the Lambda binary (from build-lambda.yml)"
+        description: "artifact-name the binary was saved under (build-lambda.yml pinned to the same commit, or a caller saving /tmp/<binary-name> with key <artifact-name>-<run_id>)"
         required: true
         type: string
       binary-name:
-        description: "Name of the binary file inside the artifact"
+        description: "Name of the binary file"
         required: false
         type: string
         default: "main"
@@ -70,10 +70,7 @@ jobs:
     outputs:
       version: ${{ steps.publish.outputs.version }}
     steps:
-      # Required whenever the runner preset carries extras: [s3-cache]:
-      # the sidecar also fronts the results endpoint the artifact API
-      # posts to, and an unwired sidecar fails CreateArtifact. Guarded so
-      # callers passing a GitHub-hosted label are untouched.
+      # Guarded so callers passing a GitHub-hosted label are untouched.
       - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
         uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
 
@@ -105,11 +102,17 @@ jobs:
           role-to-assume: ${{ inputs.aws-role }}
           aws-region: ${{ inputs.aws-region }}
 
-      - name: Download binary artifact
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v8.0.1
+      - name: Restore binary
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ${{ inputs.artifact-name }}
-          path: /tmp/lambda-build
+          path: /tmp/${{ inputs.binary-name }}
+          key: ${{ inputs.artifact-name }}-${{ github.run_id }}
+          fail-on-cache-miss: true
+
+      - name: Stage binary
+        run: |
+          mkdir -p /tmp/lambda-build
+          mv "/tmp/${{ inputs.binary-name }}" /tmp/lambda-build/
 
       - name: Download config from S3
         run: |
