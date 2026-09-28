@@ -28,7 +28,7 @@ on:
         type: string
         default: "."
       artifact-name:
-        description: "Name for the uploaded artifact (must be unique within the workflow run)"
+        description: "Name for the image tarball handed to push-ecr-image.yml; keys its Actions cache entry (must be unique within the workflow run)"
         required: true
         type: string
       build-args:
@@ -250,14 +250,16 @@ jobs:
           cache-to: type=gha,mode=max,scope=${{ inputs.artifact-name }}
           file: ${{ inputs.dockerfile }}
           outputs: type=docker,dest=/tmp/image.tar
+        env:
+          DOCKER_BUILD_RECORD_UPLOAD: false
 
       - name: Compress image tarball
         run: zstd -${{ inputs.compression-level }} -T0 /tmp/image.tar -o /tmp/image.tar.zst
 
-      - name: Upload artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      # Keyed on the run, not the attempt, so a re-run of a failed push still
+      # finds it. push-ecr-image.yml must be pinned to the same commit.
+      - name: Save image tarball
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: ${{ inputs.artifact-name }}
           path: /tmp/image.tar.zst
-          retention-days: 1
-          if-no-files-found: error
+          key: ${{ inputs.artifact-name }}-${{ github.run_id }}
