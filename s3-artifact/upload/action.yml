@@ -8,6 +8,12 @@
 # Pin by SHA. This repo is out of reach of the PRs that call it, so the pin is
 # the trust root for the code that handles the artifact role's credentials.
 #
+# TRUST. Objects are keyed by the run's git ref. Runs on refs/heads/main assume
+# the main role, which alone can write under refs/heads/main/; every other run
+# assumes the branch role, which AWS denies that prefix. The split is enforced
+# by the roles' trust on the OIDC workflow_ref claim, not by this action, so a
+# PR cannot plant an object that a main-branch or production deploy downloads.
+#
 # CREDENTIALS. The step assumes the artifact role itself from the job's OIDC
 # token (the job needs `id-token: write`). The credentials live only in this
 # step's shell: nothing goes to $GITHUB_ENV, so a job that already assumed a
@@ -16,7 +22,7 @@
 # ignored so an earlier step cannot redirect the upload to other credentials.
 #
 # LAYOUT. One uncompressed tar per artifact at
-#   s3://<bucket>/<owner>/<repo>/<run_id>/<run_attempt>/<name>.tar
+#   s3://<bucket>/<owner>/<repo>/<git ref>/<run_id>/<run_attempt>/<name>.tar
 # tagged retention-days=<class>. Bucket lifecycle rules expire each class, so
 # retention-days is rounded UP to the next of 1, 7, 14, 30, 90. Uncompressed
 # because our big artifacts (MPEG-TS captures, minified bundles already served
@@ -51,9 +57,13 @@ inputs:
     required: false
     default: 'false'
   role-to-assume:
-    description: IAM role the step assumes for the artifact bucket.
+    description: IAM role assumed by runs on any ref other than refs/heads/main.
     required: false
     default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_role_mr
+  main-role-to-assume:
+    description: IAM role assumed by runs on refs/heads/main.
+    required: false
+    default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_main_role_mr
   bucket:
     description: Artifact bucket.
     required: false
@@ -75,6 +85,8 @@ runs:
         RETENTION: ${{ inputs.retention-days }}
         INCLUDE_HIDDEN: ${{ inputs.include-hidden-files }}
         ROLE: ${{ inputs.role-to-assume }}
+        MAIN_ROLE: ${{ inputs.main-role-to-assume }}
+        REF: ${{ github.ref }}
         BUCKET: ${{ inputs.bucket }}
         REGION: ${{ inputs.aws-region }}
         REPO: ${{ github.repository }}
@@ -105,7 +117,23 @@ runs:
           IFS= ; for m in $pattern; do [ -e "$m" ] && matches+=("$(realpath -s "$m")"); done; unset IFS
         done <<< "$PATHS"
 
-        if [ "${#matches[@]}" -eq 0 ]; then
+        # Count regular files the archive will actually hold: an empty or
+        # hidden-only directory is "no files", as it is for upload-artifact.
+        nfiles=0
+        for m in "${matches[@]}"; do
+          if [ -d "$m" ]; then
+            if [ "$INCLUDE_HIDDEN" = "true" ]; then
+              n=$(cd "$m" && find . -type f | wc -l)
+            else
+              n=$(cd "$m" && find . -type f -not -path '*/.*' | wc -l)
+            fi
+            nfiles=$((nfiles + n))
+          elif [ -f "$m" ]; then
+            nfiles=$((nfiles + 1))
+          fi
+        done
+
+        if [ "$nfiles" -eq 0 ]; then
           msg="no files found for artifact '$NAME'"
           case "$IF_NO_FILES" in
             error) err "$msg" ;;
@@ -149,6 +177,7 @@ runs:
         export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
         export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" AWS_EC2_METADATA_DISABLED=true
 
+        [ "$REF" = "refs/heads/main" ] && ROLE="$MAIN_ROLE"
         creds=$(aws sts assume-role-with-web-identity --no-sign-request \
           --role-arn "$ROLE" --role-session-name "artifact-$RUN_ID-$RUN_ATTEMPT" \
           --web-identity-token "$jwt" --duration-seconds 3600 \
@@ -162,7 +191,7 @@ runs:
         unset creds jwt
 
         # ----------------------------------------------------------- upload
-        key="$REPO/$RUN_ID/$RUN_ATTEMPT/$NAME.tar"
+        key="$REPO/$REF/$RUN_ID/$RUN_ATTEMPT/$NAME.tar"
         tar -cf - -C "$lca" "${tar_excl[@]}" --null -T "$members" \
           | aws s3 cp - "s3://$BUCKET/$key" --only-show-errors
         # Tagged after the upload because `aws s3 cp` cannot tag a streamed
@@ -172,4 +201,4 @@ runs:
           --tagging "TagSet=[{Key=retention-days,Value=$class}]"
 
         size=$(aws s3api head-object --bucket "$BUCKET" --key "$key" --query ContentLength --output text)
-        echo "Uploaded artifact '$NAME' (${#matches[@]} path(s) under $lca, $size bytes) to s3://$BUCKET/$key, retention ${class}d"
+        echo "Uploaded artifact '$NAME' ($nfiles file(s) under $lca, $size bytes) to s3://$BUCKET/$key, retention ${class}d"

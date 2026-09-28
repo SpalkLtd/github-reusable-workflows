@@ -7,11 +7,16 @@
 #
 # SELECTION follows actions/download-artifact: `name` fetches one artifact
 # (missing = error); otherwise `pattern` (a shell glob, default *) fetches
-# every match (none = warning). A single named artifact extracts into `path`;
+# every match (none = warning). A single artifact extracts into `path`;
 # several extract into `path/<name>/` unless merge-multiple is true.
 #
-# Every attempt of the run is searched and the newest attempt wins per name,
-# matching a re-run job reading an artifact its earlier attempt produced.
+# Attempts up to the current one are searched and the newest wins per name,
+# so a re-run job reads what its earlier attempt produced. Later attempts
+# cannot exist yet for this run, so anything claiming to be one is ignored.
+#
+# Archives holding anything other than regular files and directories are
+# refused: a symlink would otherwise survive extraction and let a later
+# `aws s3 cp --recursive` or similar follow it out of the destination.
 name: Download artifact from S3
 description: Download same-run artifacts stored in S3 by s3-artifact/upload, assuming the artifact IAM role via OIDC.
 
@@ -33,9 +38,13 @@ inputs:
     required: false
     default: 'false'
   role-to-assume:
-    description: IAM role the step assumes for the artifact bucket.
+    description: IAM role assumed by runs on any ref other than refs/heads/main.
     required: false
     default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_role_mr
+  main-role-to-assume:
+    description: IAM role assumed by runs on refs/heads/main.
+    required: false
+    default: arn:aws:iam::496668274218:role/dev_bifrost_gha_artifacts_main_role_mr
   bucket:
     description: Artifact bucket.
     required: false
@@ -56,10 +65,13 @@ runs:
         DEST: ${{ inputs.path }}
         MERGE: ${{ inputs.merge-multiple }}
         ROLE: ${{ inputs.role-to-assume }}
+        MAIN_ROLE: ${{ inputs.main-role-to-assume }}
+        REF: ${{ github.ref }}
         BUCKET: ${{ inputs.bucket }}
         REGION: ${{ inputs.aws-region }}
         REPO: ${{ github.repository }}
         RUN_ID: ${{ github.run_id }}
+        RUN_ATTEMPT: ${{ github.run_attempt }}
       run: |
         set -euo pipefail
         err() { echo "::error::s3-artifact/download: $*"; exit 1; }
@@ -83,8 +95,9 @@ runs:
         export AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null
         export AWS_REGION="$REGION" AWS_DEFAULT_REGION="$REGION" AWS_EC2_METADATA_DISABLED=true
 
+        [ "$REF" = "refs/heads/main" ] && ROLE="$MAIN_ROLE"
         creds=$(aws sts assume-role-with-web-identity --no-sign-request \
-          --role-arn "$ROLE" --role-session-name "artifact-$RUN_ID-${GITHUB_RUN_ATTEMPT}" \
+          --role-arn "$ROLE" --role-session-name "artifact-$RUN_ID-$RUN_ATTEMPT" \
           --web-identity-token "$jwt" --duration-seconds 3600 \
           --query Credentials --output json)
         AWS_ACCESS_KEY_ID=$(jq -r .AccessKeyId <<< "$creds")
@@ -96,20 +109,23 @@ runs:
         unset creds jwt
 
         # ------------------------------------------------------------ list
-        # Keys are <repo>/<run_id>/<attempt>/<name>.tar; keep the newest
-        # attempt per name.
+        # Keys are <repo>/<ref>/<run_id>/<attempt>/<name>.tar. Captured before
+        # looping: a failure inside <(...) would be invisible to set -e.
+        prefix="$REPO/$REF/$RUN_ID/"
+        keys=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$prefix" \
+                 --query 'Contents[].Key' --output json | jq -r '.[]?')
         declare -A newest=()
-        while IFS=$'\t' read -r key; do
+        while IFS= read -r key; do
           [ -z "$key" ] && continue
-          rest="${key#"$REPO/$RUN_ID/"}"
+          rest="${key#"$prefix"}"
           attempt="${rest%%/*}"; file="${rest#*/}"
-          [[ "$attempt" =~ ^[0-9]+$ && "$file" == *.tar && "$file" != */* ]] || continue
+          [[ "$attempt" =~ ^[0-9]+$ && "$attempt" -le "$RUN_ATTEMPT" && "$file" == *.tar && "$file" != */* ]] || continue
           n="${file%.tar}"
+          [[ "$n" =~ ^[A-Za-z0-9._-]+$ && "$n" != .* ]] || continue
           if [ -z "${newest[$n]:-}" ] || [ "$attempt" -gt "${newest[$n]%%:*}" ]; then
             newest[$n]="$attempt:$key"
           fi
-        done < <(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$REPO/$RUN_ID/" \
-                   --query 'Contents[].Key' --output json | jq -r '.[]?')
+        done <<< "$keys"
 
         selected=()
         if [ -n "$NAME" ]; then
@@ -122,19 +138,23 @@ runs:
             [[ "$n" == $glob ]] && selected+=("$n")
           done
           if [ "${#selected[@]}" -eq 0 ]; then
-            echo "::warning::s3-artifact/download: no artifacts match '$glob' for run $RUN_ID"
+            echo "::warning::s3-artifact/download: no artifacts match the pattern for run $RUN_ID"
             exit 0
           fi
         fi
 
         # --------------------------------------------------------- extract
-        # GNU tar strips leading '/' and '..' components from member names,
-        # so an archive cannot write outside its destination.
-        single=$([ -n "$NAME" ] && echo true || echo false)
+        # GNU tar strips leading '/' and '..' components from member names;
+        # the type check below keeps links and devices out entirely.
+        tarball="$(mktemp -p "${RUNNER_TEMP:-/tmp}")"
+        trap 'rm -f "$tarball"' EXIT
         for n in "${selected[@]}"; do
           key="${newest[$n]#*:}"
-          if [ "$single" = "true" ] || [ "$MERGE" = "true" ]; then out="$DEST"; else out="$DEST/$n"; fi
+          if [ "${#selected[@]}" -eq 1 ] || [ "$MERGE" = "true" ]; then out="$DEST"; else out="$DEST/$n"; fi
+          aws s3 cp "s3://$BUCKET/$key" "$tarball" --only-show-errors
+          bad=$(tar -tvf "$tarball" | cut -c1 | grep -cv '^[-d]$' || true)
+          [ "$bad" -eq 0 ] || err "artifact '$n' contains $bad link or special-file entries; refusing to extract"
           mkdir -p "$out"
-          aws s3 cp "s3://$BUCKET/$key" - --only-show-errors | tar -xf - -C "$out" --no-same-owner
+          tar -xf "$tarball" -C "$out" --no-same-owner
           echo "Downloaded artifact '$n' from s3://$BUCKET/$key to $out"
         done
