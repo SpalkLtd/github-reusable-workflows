@@ -1,4 +1,5 @@
-# This workflow downloads a pre-built Lambda binary artifact and deploys it to AWS Lambda.
+# This workflow fetches a pre-built Lambda binary, verifies it against the build job's
+# sha256, and deploys it to AWS Lambda.
 # It does NOT check out caller repo code, does NOT have SSH keys, and does NOT execute
 # any user code. This separation ensures that AWS credentials are never available during
 # code execution.
@@ -28,8 +29,12 @@ on:
         description: "AWS region for deployment"
         required: true
         type: string
-      artifact-name:
-        description: "artifact-name the binary was saved under (build-lambda.yml pinned to the same commit, or a caller saving /tmp/<binary-name> with key <artifact-name>-<run_id>)"
+      binary-key:
+        description: "S3 key of the binary: build-lambda.yml's binary-key output, or a caller's own handoff under $RUNS_ON_S3_CACHE_REPO_PREFIX"
+        required: true
+        type: string
+      binary-sha256:
+        description: "sha256 of the binary (build-lambda.yml's binary-sha256 output); the fetched binary must match it"
         required: true
         type: string
       binary-name:
@@ -74,6 +79,22 @@ jobs:
       - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
         uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
 
+      # Copies exactly one object and checks it against the build job's hash
+      # before anything reads it, and before this job holds its AWS role: a
+      # tampered or missing object only fails here.
+      - name: Fetch and verify binary
+        env:
+          KEY: ${{ inputs.binary-key }}
+          EXPECTED: ${{ inputs.binary-sha256 }}
+        run: |
+          : "${RUNS_ON_S3_BUCKET_CACHE:?handoff needs a RunsOn runner with the s3-cache extra}"
+          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::binary-sha256 is missing or not a sha256"; exit 1; }
+          f="$RUNNER_TEMP/handoff"
+          aws s3 cp --only-show-errors --region "$RUNS_ON_AWS_REGION" "s3://$RUNS_ON_S3_BUCKET_CACHE/$KEY" "$f"
+          echo "$EXPECTED  $f" | sha256sum -c -
+          mkdir -p /tmp/lambda-build
+          mv "$f" "/tmp/lambda-build/${{ inputs.binary-name }}"
+
       - name: Sanitize and validate alias name
         id: alias
         env:
@@ -101,18 +122,6 @@ jobs:
         with:
           role-to-assume: ${{ inputs.aws-role }}
           aws-region: ${{ inputs.aws-region }}
-
-      - name: Restore binary
-        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: /tmp/${{ inputs.binary-name }}
-          key: ${{ inputs.artifact-name }}-${{ github.run_id }}
-          fail-on-cache-miss: true
-
-      - name: Stage binary
-        run: |
-          mkdir -p /tmp/lambda-build
-          mv "/tmp/${{ inputs.binary-name }}" /tmp/lambda-build/
 
       - name: Download config from S3
         run: |
