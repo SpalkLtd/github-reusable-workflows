@@ -56,7 +56,6 @@ jobs:
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
-      # Wires the RunsOn s3-cache sidecar the image tarball is restored from.
       # Guarded so callers passing a GitHub-hosted label are untouched.
       - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
         uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0

@@ -251,16 +251,11 @@ jobs:
           file: ${{ inputs.dockerfile }}
           outputs: type=docker,dest=/tmp/image.tar
         env:
-          # The build record artifact is unread and counts against the
-          # caller org's artifact storage quota.
           DOCKER_BUILD_RECORD_UPLOAD: false
 
       - name: Compress image tarball
         run: zstd -${{ inputs.compression-level }} -T0 /tmp/image.tar -o /tmp/image.tar.zst
 
-      # Handed to push-ecr-image.yml through the Actions cache rather than an
-      # artifact: once the org's artifact storage quota fills, every upload
-      # fails for 6-12 hours. On RunsOn runners the cache is S3 with no quota.
       # Keyed on the run, not the attempt, so a re-run of a failed push still
       # finds it. push-ecr-image.yml must be pinned to the same commit.
       - name: Save image tarball
