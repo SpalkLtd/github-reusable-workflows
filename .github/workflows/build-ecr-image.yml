@@ -28,7 +28,7 @@ on:
         type: string
         default: "."
       artifact-name:
-        description: "Name for the image tarball handed to push-ecr-image.yml; keys its Actions cache entry (must be unique within the workflow run)"
+        description: "Name for the image tarball handed to push-ecr-image.yml; names its S3 handoff object and buildx cache scope (must be unique within the workflow run)"
         required: true
         type: string
       build-args:
@@ -82,7 +82,7 @@ on:
         required: false
     outputs:
       artifact-name:
-        description: "Name of the uploaded artifact containing the image tarball"
+        description: "artifact-name, passed through"
         value: ${{ jobs.build-ecr-image.outputs.artifact-name }}
       tarball-key:
         description: "S3 key of the image tarball; pass to push-ecr-image.yml's tarball-key"
@@ -271,9 +271,10 @@ jobs:
       - name: Hand image tarball to the next job
         id: handoff
         env:
-          KEY: ${{ env.RUNS_ON_S3_CACHE_REPO_PREFIX }}/handoff/${{ github.run_id }}/${{ github.run_attempt }}/${{ inputs.artifact-name }}.tar.zst
+          KEY_SUFFIX: handoff/${{ github.run_id }}/${{ github.run_attempt }}/${{ inputs.artifact-name }}.tar.zst
         run: |
           : "${RUNS_ON_S3_BUCKET_CACHE:?handoff needs a RunsOn runner with the s3-cache extra}"
+          KEY="${RUNS_ON_S3_CACHE_REPO_PREFIX:?handoff needs a RunsOn runner with the s3-cache extra}/$KEY_SUFFIX"
           sha=$(sha256sum "/tmp/image.tar.zst" | cut -d' ' -f1)
           env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN -u AWS_PROFILE \
             aws s3 cp --only-show-errors --region "$RUNS_ON_AWS_REGION" "/tmp/image.tar.zst" "s3://$RUNS_ON_S3_BUCKET_CACHE/$KEY"

@@ -17,7 +17,7 @@ on:
   workflow_call:
     inputs:
       runner:
-        description: 'Runner label for this job. Defaults to a GitHub-hosted runner; pass a RunsOn label to run it on RunsOn instead.'
+        description: 'Runner label for this job. Must be a RunsOn label with the s3-cache extra: the handoff fetch needs the RunsOn cache bucket.'
         required: false
         type: string
         default: "ubuntu-latest"
@@ -75,7 +75,6 @@ jobs:
     outputs:
       version: ${{ steps.publish.outputs.version }}
     steps:
-      # Guarded so callers passing a GitHub-hosted label are untouched.
       - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
         uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
 
