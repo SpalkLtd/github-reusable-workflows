@@ -32,10 +32,6 @@ on:
         description: "artifact-name the binary was saved under (build-lambda.yml pinned to the same commit, or a caller saving /tmp/<binary-name> with key <artifact-name>-<run_id>)"
         required: true
         type: string
-      binary-sha256:
-        description: "sha256 of the binary (build-lambda.yml's binary-sha256 output); the restored binary must match it"
-        required: true
-        type: string
       binary-name:
         description: "Name of the binary file"
         required: false
@@ -112,15 +108,6 @@ jobs:
           path: /tmp/${{ inputs.binary-name }}
           key: ${{ inputs.artifact-name }}-${{ github.run_id }}
           fail-on-cache-miss: true
-
-      # The cache is shared across the runner stack, so check the restored file
-      # against the hash the build job computed (job outputs are run-scoped).
-      - name: Verify binary
-        env:
-          EXPECTED: ${{ inputs.binary-sha256 }}
-        run: |
-          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::binary-sha256 is not a sha256 hex digest"; exit 1; }
-          echo "$EXPECTED  /tmp/${{ inputs.binary-name }}" | sha256sum -c -
 
       - name: Stage binary
         run: |

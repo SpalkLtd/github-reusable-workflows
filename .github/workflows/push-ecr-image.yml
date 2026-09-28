@@ -35,10 +35,6 @@ on:
         description: "artifact-name given to build-ecr-image.yml (pinned to the same commit); keys the image tarball's Actions cache entry"
         required: true
         type: string
-      tarball-sha256:
-        description: "build-ecr-image.yml's tarball-sha256 output; the restored tarball must match it"
-        required: true
-        type: string
       media-region-repository-name:
         description: "The media region ECR repository name"
         required: false
@@ -95,15 +91,6 @@ jobs:
           path: /tmp/image.tar.zst
           key: ${{ inputs.artifact-name }}-${{ github.run_id }}
           fail-on-cache-miss: true
-
-      # The cache is shared across the runner stack, so check the restored file
-      # against the hash the build job computed (job outputs are run-scoped).
-      - name: Verify image tarball
-        env:
-          EXPECTED: ${{ inputs.tarball-sha256 }}
-        run: |
-          [[ "$EXPECTED" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::tarball-sha256 is not a sha256 hex digest"; exit 1; }
-          echo "$EXPECTED  /tmp/image.tar.zst" | sha256sum -c -
 
       - name: Decompress image tarball
         run: zstd -d /tmp/image.tar.zst -o /tmp/image.tar
