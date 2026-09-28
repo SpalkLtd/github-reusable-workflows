@@ -84,6 +84,9 @@ on:
       artifact-name:
         description: "Name of the uploaded artifact containing the image tarball"
         value: ${{ jobs.build-ecr-image.outputs.artifact-name }}
+      tarball-sha256:
+        description: "sha256 of the image tarball; pass to push-ecr-image.yml's tarball-sha256"
+        value: ${{ jobs.build-ecr-image.outputs.tarball-sha256 }}
 
 jobs:
   build-ecr-image:
@@ -91,6 +94,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     outputs:
       artifact-name: ${{ inputs.artifact-name }}
+      tarball-sha256: ${{ steps.compress.outputs.sha256 }}
     steps:
       - if: ${{ startsWith(inputs.runner, 'runs-on=') }}
         uses: runs-on/action@46910bf61b41721b0579f237e186afb35477007a # v2.3.0
@@ -254,7 +258,10 @@ jobs:
           DOCKER_BUILD_RECORD_UPLOAD: false
 
       - name: Compress image tarball
-        run: zstd -${{ inputs.compression-level }} -T0 /tmp/image.tar -o /tmp/image.tar.zst
+        id: compress
+        run: |
+          zstd -${{ inputs.compression-level }} -T0 /tmp/image.tar -o /tmp/image.tar.zst
+          echo "sha256=$(sha256sum /tmp/image.tar.zst | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # Keyed on the run, not the attempt, so a re-run of a failed push still
       # finds it. push-ecr-image.yml must be pinned to the same commit.

@@ -55,6 +55,9 @@ on:
       artifact-name:
         description: "Name of the uploaded artifact containing the Lambda binary"
         value: ${{ jobs.build-lambda.outputs.artifact-name }}
+      binary-sha256:
+        description: "sha256 of the binary; pass to deploy-lambda.yml's binary-sha256"
+        value: ${{ jobs.build-lambda.outputs.binary-sha256 }}
 
 jobs:
   build-lambda:
@@ -62,6 +65,7 @@ jobs:
     runs-on: ${{ inputs.runner }}
     outputs:
       artifact-name: ${{ inputs.artifact-name }}
+      binary-sha256: ${{ steps.build.outputs.sha256 }}
     env:
       GOPRIVATE: "github.com/SpalkLtd/*"
     steps:
@@ -95,6 +99,7 @@ jobs:
         run: go mod download
 
       - name: Build Lambda binary
+        id: build
         working-directory: ${{ inputs.working-directory }}
         env:
           GOOS: linux
@@ -102,6 +107,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go build -ldflags="-s -w" -o /tmp/${{ inputs.binary-name }} ${{ inputs.build-dir }}
+          echo "sha256=$(sha256sum /tmp/${{ inputs.binary-name }} | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       # deploy-lambda.yml must be pinned to the same commit.
       - name: Save binary
