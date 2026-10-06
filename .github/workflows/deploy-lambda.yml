@@ -171,6 +171,12 @@ jobs:
           echo "Published Lambda version: ${VERSION}"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # A run cancelled after this step (e.g. superseded when a PR label is added)
+      # leaves the alias behind, and every rerun for that commit then hits
+      # ResourceConflictException. The alias names one build, so the existing one
+      # already points at a complete version of this same code: keep it. Not
+      # update-alias: deploy roles deliberately lack UpdateAlias, since IAM cannot
+      # scope it away from 'current'.
       - name: Create version-specific alias
         env:
           FUNCTION_NAME: ${{ inputs.function-name }}
@@ -178,11 +184,21 @@ jobs:
           VERSION: ${{ steps.publish.outputs.version }}
         run: |
           echo "Creating alias '${ALIAS}' pointing to version ${VERSION}"
-          aws lambda create-alias \
+          CREATE_ERR=$(mktemp)
+          if ! aws lambda create-alias \
             --function-name "$FUNCTION_NAME" \
             --name "$ALIAS" \
             --function-version "$VERSION" \
-            --region ${{ inputs.aws-region }} > /dev/null
+            --region ${{ inputs.aws-region }} > /dev/null 2>"$CREATE_ERR"; then
+            if grep -q "ResourceConflictException.*Alias already exists" "$CREATE_ERR"; then
+              echo "Alias '${ALIAS}' already exists from an earlier run of this build; keeping it."
+            else
+              cat "$CREATE_ERR" >&2
+              rm -f "$CREATE_ERR"
+              exit 1
+            fi
+          fi
+          rm -f "$CREATE_ERR"
 
       # A moving alias (e.g. pr-42-head) is re-pointed on every deploy, so it may
       # already exist. update-alias fails on the first deploy (alias absent), so
